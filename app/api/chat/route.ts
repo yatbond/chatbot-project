@@ -148,11 +148,12 @@ export async function POST(request: NextRequest) {
         const file = files[index]
         
         // Download and process only this file
-        const fileContent = await downloadFile(file.id, file.mimeType)
+        const mimeType = file.mimeType || 'application/octet-stream'
+        const fileContent = await downloadFile(file.id, mimeType)
         let context = ''
-        
+
         if (fileContent) {
-          const extracted = await extractTextFromFile(fileContent, file.mimeType, file.name)
+          const extracted = await extractTextFromFile(fileContent, mimeType, file.name)
           context = formatDocument(extracted.text, extracted.tables, file.name)
         }
 
