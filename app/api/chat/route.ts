@@ -180,9 +180,10 @@ export async function POST(request: NextRequest) {
       const index = selectedReportIndex - 1
       if (index >= 0 && index < files.length) {
         selectedFile = files[index]
-        const fileContent = await downloadFile(selectedFile.id, selectedFile.mimeType)
+        const mimeType = selectedFile.mimeType || 'application/octet-stream'
+        const fileContent = await downloadFile(selectedFile.id, mimeType)
         if (fileContent) {
-          const extracted = await extractTextFromFile(fileContent, selectedFile.mimeType, selectedFile.name)
+          const extracted = await extractTextFromFile(fileContent, mimeType, selectedFile.name)
           context = formatDocument(extracted.text, extracted.tables, selectedFile.name)
         }
       }
