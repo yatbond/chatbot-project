@@ -149,16 +149,20 @@ export async function POST(request: NextRequest) {
         
         // Download and process only this file
         const mimeType = file.mimeType || 'application/octet-stream'
+        if (!file.id) {
+          return NextResponse.json({ error: 'File ID is missing' }, { status: 400 })
+        }
         const fileContent = await downloadFile(file.id, mimeType)
+        const fileName = file.name || 'unknown'
         let context = ''
 
         if (fileContent) {
-          const extracted = await extractTextFromFile(fileContent, mimeType, file.name)
-          context = formatDocument(extracted.text, extracted.tables, file.name)
+          const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
+          context = formatDocument(extracted.text, extracted.tables, fileName)
         }
 
         const answer = await getMiniMaxResponse(
-          `Focus ONLY on this report (${file.name}). ${question}`,
+          `Focus ONLY on this report (${fileName}). ${question}`,
           context
         )
 
@@ -166,7 +170,7 @@ export async function POST(request: NextRequest) {
           answer,
           files: files.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
           selectedReportIndex: selectedReportIndex,
-          selectedFileName: file.name,
+          selectedFileName: fileName,
           showList: false
         })
       }
@@ -180,11 +184,16 @@ export async function POST(request: NextRequest) {
       const index = selectedReportIndex - 1
       if (index >= 0 && index < files.length) {
         selectedFile = files[index]
-        const mimeType = selectedFile.mimeType || 'application/octet-stream'
-        const fileContent = await downloadFile(selectedFile.id, mimeType)
-        if (fileContent) {
-          const extracted = await extractTextFromFile(fileContent, mimeType, selectedFile.name)
-          context = formatDocument(extracted.text, extracted.tables, selectedFile.name)
+        if (!selectedFile.id) {
+          console.error('Selected file is missing ID')
+        } else {
+          const mimeType = selectedFile.mimeType || 'application/octet-stream'
+          const fileName = selectedFile.name || 'unknown'
+          const fileContent = await downloadFile(selectedFile.id, mimeType)
+          if (fileContent) {
+            const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
+            context = formatDocument(extracted.text, extracted.tables, fileName)
+          }
         }
       }
     }
@@ -195,7 +204,7 @@ export async function POST(request: NextRequest) {
     }
 
     const answer = await getMiniMaxResponse(
-      selectedFile 
+      selectedFile && selectedFile.name
         ? `About ${selectedFile.name}: ${question}` 
         : question,
       context

@@ -5,7 +5,7 @@ const fs = require('fs')
 const path = require('path')
 
 // Try to import pdf-parse, fallback to simple extraction
-let pdfParse = null
+let pdfParse: ((dataBuffer: Buffer) => Promise<any>) | null = null
 try {
   pdfParse = require('pdf-parse')
 } catch (e) {
