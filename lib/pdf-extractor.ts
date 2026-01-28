@@ -278,3 +278,96 @@ export async function extractTextSimple(pdfBuffer: Buffer): Promise<string> {
     return ''
   }
 }
+
+/**
+ * Special handler for Financial Status tables with merged headers
+ * Creates clear column mappings for accurate LLM interpretation
+ */
+export function formatFinancialTableForAI(tables: TableCandidate[]): string {
+  if (tables.length === 0) return ''
+
+  let formatted = '\n\n=== FINANCIAL STATUS TABLE ===\n\n'
+
+  // Define the column mapping for Financial Status table
+  // Based on the structure: Budget spans cols 2-5, then separate columns for each category
+  const columnLabels = [
+    'Item Code',
+    'Description',
+    'Tender (Budget)',
+    '1st Working (Budget)',
+    'Adjustment Cost (Budget)',
+    'Revision (Budget)',
+    'Business Plan',
+    'Audit Report (WIP)',
+    'Adj Cost Variation',
+    'Projection',
+    'Committed Value',
+    'E1=% (Adj Cost)',
+    'F=Variance',
+    'Accrual',
+    'Cash Flow',
+    'G1=% (Accrual)',
+    'H=Variance'
+  ]
+
+  for (const table of tables) {
+    // Check if this looks like a financial table
+    const hasFinancialKeywords = table.rows.some(row =>
+      row.some(cell => cell && (
+        /Gross Profit/i.test(cell) ||
+        /Total Income/i.test(cell) ||
+        /Total Cost/i.test(cell) ||
+        /Acc\. Net Profit/i.test(cell) ||
+        /HK\$/.test(cell) ||
+        /Financial Status/i.test(cell)
+      ))
+    )
+
+    if (!hasFinancialKeywords) continue
+
+    formatted += 'Column Mapping:\n'
+    columnLabels.forEach((label, idx) => {
+      formatted += `  Col ${idx}: ${label}\n`
+    })
+    formatted += '\n'
+
+    formatted += 'Key Rows:\n'
+    // Extract key financial rows
+    const keyRows = table.rows.filter(row =>
+      row.some(cell => cell && (
+        /Gross Profit/i.test(cell) ||
+        /Total Income/i.test(cell) ||
+        /Total Cost/i.test(cell) ||
+        /Acc\. Net Profit/i.test(cell)
+      ))
+    )
+
+    for (const row of keyRows) {
+      // Find the description
+      const desc = row[1] || row[0] || ''
+      formatted += `\n${desc}:\n`
+
+      // Print key columns with labels
+      const keyColumns = [
+        { idx: 2, label: 'Tender' },
+        { idx: 3, label: '1st Working' },
+        { idx: 6, label: 'Business Plan' },
+        { idx: 7, label: 'Audit Report' },
+        { idx: 9, label: 'Projection' },
+        { idx: 13, label: 'Accrual' },
+        { idx: 14, label: 'Cash Flow' }
+      ]
+
+      for (const col of keyColumns) {
+        const val = row[col.idx] || ''
+        if (val) {
+          formatted += `  ${col.label}: ${val}\n`
+        }
+      }
+    }
+
+    formatted += '\n'
+  }
+
+  return formatted
+}
