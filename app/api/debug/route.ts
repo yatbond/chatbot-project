@@ -33,13 +33,14 @@ export async function GET(request: NextRequest) {
     
     // If fileId provided, test that specific file
     if (fileId) {
-      const fileContent = await downloadFile(fileId, mimeType)
+      const fileContent = await downloadFile(fileId, mimeType, fileName || undefined)
       
       if (!fileContent) {
         return NextResponse.json({ 
           error: 'Failed to download file', 
           fileId,
           mimeType,
+          fileName,
           note: 'Check Vercel function logs for detailed error'
         })
       }

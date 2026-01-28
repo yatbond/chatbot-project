@@ -61,12 +61,16 @@ export async function listKnowledgeBaseFiles(folderId: string) {
 }
 
 // Download file content
-export async function downloadFile(fileId: string, mimeType: string): Promise<Buffer | null> {
+export async function downloadFile(fileId: string, mimeType: string, fileName?: string): Promise<Buffer | null> {
   try {
-    // For Excel files, use export endpoint (more reliable for Google Drive)
-    const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheet')
+    // Check if it's Excel by extension or mimeType
+    const isExcelFile = fileName?.toLowerCase().endsWith('.xlsx') || 
+                        fileName?.toLowerCase().endsWith('.xls') ||
+                        mimeType.includes('excel') || 
+                        mimeType.includes('spreadsheet')
     
-    if (isExcel) {
+    if (isExcelFile) {
+      console.log('Downloading Excel file:', fileName)
       // Export Excel from Google Drive
       const response = await drive.files.export({
         fileId,
@@ -74,6 +78,7 @@ export async function downloadFile(fileId: string, mimeType: string): Promise<Bu
       }, {
         responseType: 'arraybuffer'
       })
+      console.log('Excel export successful, size:', response.data.byteLength)
       return Buffer.from(response.data as ArrayBuffer)
     }
     

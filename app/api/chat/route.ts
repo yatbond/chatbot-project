@@ -310,7 +310,7 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ answer: 'Error: No file found for this project.' })
         }
         
-        const fileContent = await downloadFile(fileId, mimeType)
+        const fileContent = await downloadFile(fileId, mimeType, fileName)
         let context = ''
 
         if (fileContent) {
@@ -396,7 +396,7 @@ export async function POST(request: NextRequest) {
         }
         
         if (fileId) {
-          const fileContent = await downloadFile(fileId, mimeType)
+          const fileContent = await downloadFile(fileId, mimeType, fileName)
           if (fileContent) {
             if (dataType === 'excel') {
               const excelData = parseExcelFinancialData(fileContent)
