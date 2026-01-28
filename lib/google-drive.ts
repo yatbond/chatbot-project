@@ -63,32 +63,15 @@ export async function listKnowledgeBaseFiles(folderId: string) {
 // Download file content
 export async function downloadFile(fileId: string, mimeType: string, fileName?: string): Promise<Buffer | null> {
   try {
-    // Check if it's Excel by extension or mimeType
-    const isExcelFile = fileName?.toLowerCase().endsWith('.xlsx') || 
-                        fileName?.toLowerCase().endsWith('.xls') ||
-                        mimeType.includes('excel') || 
-                        mimeType.includes('spreadsheet')
-    
-    if (isExcelFile) {
-      console.log('Downloading Excel file:', fileName)
-      // Export Excel from Google Drive
-      const response = await drive.files.export({
-        fileId,
-        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      }, {
-        responseType: 'arraybuffer'
-      })
-      console.log('Excel export successful, size:', response.data.byteLength)
-      return Buffer.from(response.data as ArrayBuffer)
-    }
-    
-    // For other supported types, use alt=media
+    // For all supported document types, use alt=media to download
     const supportedTypes = [
       'application/pdf',
       'text/plain',
       'application/msword',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'text/csv'
+      'text/csv',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     ]
     
     if (!supportedTypes.includes(mimeType)) {
@@ -96,7 +79,9 @@ export async function downloadFile(fileId: string, mimeType: string, fileName?: 
       return null
     }
 
-    // Download the file
+    console.log('Downloading file:', fileId, 'mime:', mimeType, 'name:', fileName)
+    
+    // Use alt=media to download the file as-is
     const response = await drive.files.get({
       fileId,
       alt: 'media'
@@ -104,10 +89,14 @@ export async function downloadFile(fileId: string, mimeType: string, fileName?: 
       responseType: 'arraybuffer'
     })
 
+    console.log('Download successful, size:', response.data.byteLength)
     return Buffer.from(response.data as ArrayBuffer)
     
   } catch (error: any) {
     console.error('Error downloading file:', error.message, error.code)
+    if (error.code === 403) {
+      console.error('Permission denied - check service account access to the file')
+    }
     return null
   }
 }
