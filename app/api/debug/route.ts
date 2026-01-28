@@ -26,6 +26,36 @@ function parseFileName(fileName: string): { projectNo: string; projectName: stri
 
 export async function GET(request: NextRequest) {
   try {
+    const { searchParams } = new URL(request.url)
+    const fileId = searchParams.get('fileId')
+    const fileName = searchParams.get('fileName')
+    const mimeType = searchParams.get('mimeType') || 'application/octet-stream'
+    
+    // If fileId provided, test that specific file
+    if (fileId) {
+      const fileContent = await downloadFile(fileId, mimeType)
+      
+      if (!fileContent) {
+        return NextResponse.json({ error: 'Failed to download file', fileId })
+      }
+
+      let result: any = {
+        fileName,
+        mimeType,
+        contentSize: fileContent.length,
+        firstBytes: Array.from(fileContent.slice(0, 50))
+      }
+
+      if (isExcelFile(fileName || '')) {
+        const excelData = parseExcelFinancialData(fileContent)
+        result.excelParsed = excelData
+        result.excelFormatted = excelData ? formatExcelData(excelData, fileName || '') : 'FAILED TO PARSE'
+      }
+
+      return NextResponse.json(result)
+    }
+    
+    // Default: list all files
     const folderId = process.env.KNOWLEDGE_BASE_FOLDER_ID
     if (!folderId) {
       return NextResponse.json({ error: 'Missing KNOWLEDGE_BASE_FOLDER_ID' })
