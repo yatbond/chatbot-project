@@ -311,13 +311,18 @@ export async function POST(request: NextRequest) {
     if (selectedReportIndex !== undefined && selectedReportIndex !== null) {
       let project = null
       
+      // Handle both string and number inputs
+      const inputValue = typeof selectedReportIndex === 'string' 
+        ? parseInt(selectedReportIndex, 10) 
+        : selectedReportIndex
+      
       // Check if it's a list number (1-21)
-      const listIndex = selectedReportIndex - 1
+      const listIndex = inputValue - 1
       if (listIndex >= 0 && listIndex < projects.length) {
         project = projects[listIndex]
       } else {
         // Check if it matches a project number (e.g., "990" matches project 990)
-        const inputNum = String(selectedReportIndex)
+        const inputNum = String(inputValue)
         project = projects.find(p => p.projectNo === inputNum)
       }
       
@@ -374,13 +379,18 @@ export async function POST(request: NextRequest) {
     let selectedProject = null
 
     if (selectedReportIndex !== null && selectedReportIndex !== undefined) {
+      // Handle both string and number inputs
+      const inputValue = typeof selectedReportIndex === 'string' 
+        ? parseInt(selectedReportIndex, 10) 
+        : selectedReportIndex
+      
       // Check if it's a list number (1-21)
-      const listIndex = selectedReportIndex - 1
+      const listIndex = inputValue - 1
       if (listIndex >= 0 && listIndex < projects.length) {
         selectedProject = projects[listIndex]
       } else {
         // Check if it matches a project number (e.g., "990" matches project 990)
-        const inputNum = String(selectedReportIndex)
+        const inputNum = String(inputValue)
         selectedProject = projects.find(p => p.projectNo === inputNum)
       }
       
