@@ -50,8 +50,9 @@ export async function extractTextAndTables(pdfBuffer: Buffer, fileName: string):
   }
 
   try {
-    // Load PDF document
-    const loadingTask = pdfjsLib.getDocument({ data: pdfBuffer })
+    // Load PDF document - convert Buffer to Uint8Array for pdfjs-dist
+    const uint8Array = new Uint8Array(pdfBuffer)
+    const loadingTask = pdfjsLib.getDocument({ data: uint8Array })
     const pdf = await loadingTask.promise
     result.pageCount = pdf.numPages
 
