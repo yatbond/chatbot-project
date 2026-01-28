@@ -286,9 +286,14 @@ export async function POST(request: NextRequest) {
         
         if (project.hasExcel) {
           fileId = project.excelFile.id
-          mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
           fileName = project.excelFile.name
           dataType = 'excel'
+          // Set correct mimeType based on extension
+          if (fileName.toLowerCase().endsWith('.xls')) {
+            mimeType = 'application/vnd.ms-excel'
+          } else {
+            mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          }
         } else if (project.hasJson) {
           fileId = project.jsonFile.id
           mimeType = 'application/json'
@@ -370,9 +375,14 @@ export async function POST(request: NextRequest) {
         
         if (selectedProject.hasExcel) {
           fileId = selectedProject.excelFile.id
-          mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
           fileName = selectedProject.excelFile.name
           dataType = 'excel'
+          // Set correct mimeType based on extension
+          if (fileName.toLowerCase().endsWith('.xls')) {
+            mimeType = 'application/vnd.ms-excel'
+          } else {
+            mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          }
         } else if (selectedProject.hasJson) {
           fileId = selectedProject.jsonFile.id
           mimeType = 'application/json'
