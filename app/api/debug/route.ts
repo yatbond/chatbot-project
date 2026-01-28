@@ -1,14 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { listKnowledgeBaseFiles, testConnection, downloadFile } from '@/lib/google-drive'
-import { parseExcelFinancialData, formatExcelData } from '@/lib/excel-parser'
-import { extractFinancialData } from '@/lib/financial-parser'
+import * as XLSX from 'xlsx'
 
 function isExcelFile(fileName: string): boolean {
   return fileName.toLowerCase().endsWith('.xlsx') || fileName.toLowerCase().endsWith('.xls')
-}
-
-function isJsonFile(fileName: string): boolean {
-  return fileName.toLowerCase().endsWith('_data.json')
 }
 
 function parseFileName(fileName: string): { projectNo: string; projectName: string } {
@@ -24,6 +19,17 @@ function parseFileName(fileName: string): { projectNo: string; projectName: stri
   return { projectNo: projectNo || 'Unknown', projectName: projectName || name }
 }
 
+function isNumeric(val: any): boolean {
+  if (val === null || val === undefined || val === '') return false
+  const str = String(val).replace(/[,$]/g, '').trim()
+  return !isNaN(Number(str)) && str !== ''
+}
+
+function cleanNumber(val: any): string {
+  if (val === null || val === undefined || val === '') return 'N/A'
+  return String(val).trim()
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
@@ -31,31 +37,67 @@ export async function GET(request: NextRequest) {
     const fileName = searchParams.get('fileName')
     const mimeType = searchParams.get('mimeType') || 'application/octet-stream'
     
-    // If fileId provided, test that specific file
+    // If fileId provided, show all data from that file
     if (fileId) {
       const fileContent = await downloadFile(fileId, mimeType, fileName || undefined)
       
       if (!fileContent) {
-        return NextResponse.json({ 
-          error: 'Failed to download file', 
-          fileId,
-          mimeType,
-          fileName,
-          note: 'Check Vercel function logs for detailed error'
-        })
+        return NextResponse.json({ error: 'Failed to download file', fileId, fileName })
       }
 
       let result: any = {
         fileName,
         mimeType,
-        contentSize: fileContent.length,
-        firstBytes: Array.from(fileContent.slice(0, 50))
+        contentSize: fileContent.length
       }
 
       if (isExcelFile(fileName || '')) {
-        const excelData = parseExcelFinancialData(fileContent)
-        result.excelParsed = excelData
-        result.excelFormatted = excelData ? formatExcelData(excelData, fileName || '') : 'FAILED TO PARSE'
+        try {
+          const workbook = XLSX.read(fileContent, { type: 'buffer' })
+          const sheetName = workbook.SheetNames[0]
+          const worksheet = workbook.Sheets[sheetName]
+          const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][]
+          
+          result.sheetName = sheetName
+          result.totalRows = data.length
+          
+          // Find ALL rows with numeric data
+          const numericRows: { rowIndex: number, values: any[], labels: string[] }[] = []
+          
+          for (let i = 0; i < Math.min(data.length, 100); i++) {
+            const row = data[i]
+            if (!row || row.length === 0) continue
+            
+            // Check if row has any numeric values
+            const hasNumeric = row.some(cell => isNumeric(cell))
+            
+            // Also show rows that might be headers (contain text labels)
+            const rowStr = String(row).toLowerCase()
+            const hasLabel = rowStr.includes('gross profit') || 
+                            rowStr.includes('tender') || 
+                            rowStr.includes('budget') ||
+                            rowStr.includes('revenue') ||
+                            rowStr.includes('cost')
+            
+            if (hasNumeric || hasLabel) {
+              const labels = row.map((cell: any) => String(cell || '').substring(0, 30))
+              const values = row.map((cell: any) => cleanNumber(cell))
+              numericRows.push({ rowIndex: i, values, labels })
+            }
+          }
+          
+          result.allNumericRows = numericRows.map(r => ({
+            row: r.rowIndex,
+            labels: r.labels.slice(0, 8),
+            values: r.values.slice(0, 8)
+          }))
+          
+          // Also show the raw sheet as JSON
+          result.jsonPreview = XLSX.utils.sheet_to_json(worksheet)
+          
+        } catch (err: any) {
+          result.excelError = err.message
+        }
       }
 
       return NextResponse.json(result)
@@ -70,7 +112,6 @@ export async function GET(request: NextRequest) {
     const connectionTest = await testConnection()
     const files = await listKnowledgeBaseFiles(folderId)
     
-    // Group files by project
     const projectMap = new Map<string, any>()
     
     files.forEach((f: any) => {
@@ -87,8 +128,7 @@ export async function GET(request: NextRequest) {
         name: f.name,
         mimeType: f.mimeType,
         id: f.id,
-        isExcel: isExcelFile(f.name),
-        isJson: isJsonFile(f.name)
+        isExcel: isExcelFile(f.name)
       })
     })
 
@@ -99,43 +139,6 @@ export async function GET(request: NextRequest) {
       totalFiles: files.length,
       projects: Array.from(projectMap.values())
     })
-    
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-}
-
-export async function POST(request: NextRequest) {
-  try {
-    const { fileId, mimeType, fileName } = await request.json()
-    
-    if (!fileId) {
-      return NextResponse.json({ error: 'fileId required' })
-    }
-
-    const fileContent = await downloadFile(fileId, mimeType || 'application/octet-stream')
-    
-    if (!fileContent) {
-      return NextResponse.json({ error: 'Failed to download file' })
-    }
-
-    console.log('File content size:', fileContent.length)
-    console.log('First 100 bytes:', fileContent.slice(0, 100).toString())
-
-    let result: any = {
-      fileName,
-      mimeType,
-      contentSize: fileContent.length,
-      contentType: typeof fileContent
-    }
-
-    if (isExcelFile(fileName)) {
-      const excelData = parseExcelFinancialData(fileContent)
-      result.excelParsed = excelData
-      result.excelFormatted = excelData ? formatExcelData(excelData, fileName) : 'FAILED TO PARSE'
-    }
-
-    return NextResponse.json(result)
     
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 })
