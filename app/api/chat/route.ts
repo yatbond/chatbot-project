@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { listKnowledgeBaseFiles, testConnection, downloadFile } from '@/lib/google-drive'
 import { getMiniMaxResponse } from '@/lib/minimax'
+import { extractTextAndTables, formatTextForAI, formatTablesForAI } from '@/lib/pdf-extractor'
 
 // In-memory storage for session state (for demo - use Redis in production)
 const sessionState = new Map<string, { selectedReportIndex: number | null }>()
@@ -12,27 +13,14 @@ function getSession(sessionId: string) {
   return sessionState.get(sessionId)!
 }
 
-// Try to import pdf-parse
-let pdfParse: any = null
-try {
-  pdfParse = require('pdf-parse')
-} catch (e) {
-  console.log('pdf-parse not installed')
-}
-
-interface TableCandidate {
-  rows: string[][]
-  confidence: number
-}
-
 async function extractTextFromFile(buffer: Buffer, mimeType: string, fileName: string) {
-  if (mimeType === 'application/pdf' && pdfParse) {
+  if (mimeType === 'application/pdf') {
     try {
-      const data = await pdfParse(buffer)
+      const result = await extractTextAndTables(buffer, fileName)
       return {
-        text: data.text,
-        tables: detectTables(data.text),
-        pageCount: data.numpages
+        text: formatTextForAI(result.text, result.tables),
+        tables: result.tables,
+        pageCount: result.pageCount
       }
     } catch (error: any) {
       return { text: `[Error reading PDF: ${error.message}]`, tables: [], pageCount: 0 }
@@ -45,53 +33,6 @@ async function extractTextFromFile(buffer: Buffer, mimeType: string, fileName: s
     tables: [],
     pageCount: 1
   }
-}
-
-function detectTables(text: string): TableCandidate[] {
-  const tables: TableCandidate[] = []
-  const lines = text.split('\n')
-  let currentTable: string[][] = []
-
-  for (const line of lines) {
-    const trimmed = line.trim()
-    const hasPipe = trimmed.includes('|')
-    const hasTabs = (trimmed.match(/\t/g) || []).length >= 2
-
-    if ((hasPipe || hasTabs) && trimmed.length > 5) {
-      const cells = hasPipe 
-        ? trimmed.split('|').map(c => c.trim()).filter(Boolean)
-        : trimmed.split('\t').map(c => c.trim()).filter(Boolean)
-      
-      if (cells.length >= 2) {
-        currentTable.push(cells)
-      }
-    } else if (trimmed === '' && currentTable.length > 3) {
-      tables.push({ rows: [...currentTable], confidence: 0.7 })
-      currentTable = []
-    }
-  }
-
-  if (currentTable.length > 3) {
-    tables.push({ rows: [...currentTable], confidence: 0.7 })
-  }
-
-  return tables
-}
-
-function formatDocument(text: string, tables: TableCandidate[], fileName: string): string {
-  let tableSection = ''
-  
-  if (tables.length > 0) {
-    tableSection = `\n\n[TABLES IN ${fileName}]\n`
-    tables.forEach((table, i) => {
-      tableSection += `\n--- Table ${i + 1} ---\n`
-      table.rows.forEach(row => {
-        tableSection += `| ${row.join(' | ')} |\n`
-      })
-    })
-  }
-  
-  return `[FILE: ${fileName}]\n${text}${tableSection}`
 }
 
 export async function POST(request: NextRequest) {
@@ -158,7 +99,7 @@ export async function POST(request: NextRequest) {
 
         if (fileContent) {
           const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
-          context = formatDocument(extracted.text, extracted.tables, fileName)
+          context = `[FILE: ${fileName}]\n${extracted.text}`
         }
 
         const answer = await getMiniMaxResponse(
@@ -192,7 +133,7 @@ export async function POST(request: NextRequest) {
           const fileContent = await downloadFile(selectedFile.id, mimeType)
           if (fileContent) {
             const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
-            context = formatDocument(extracted.text, extracted.tables, fileName)
+            context = `[FILE: ${fileName}]\n${extracted.text}`
           }
         }
       }
