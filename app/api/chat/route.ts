@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { listKnowledgeBaseFiles, testConnection, downloadFile } from '@/lib/google-drive'
 import { getMiniMaxResponse } from '@/lib/minimax'
+import { getFormattedData, getGrossProfitAuditReport } from '@/lib/taktak-financial'
 
 // In-memory storage for session state (for demo - use Redis in production)
 const sessionState = new Map<string, { selectedReportIndex: number | null }>()
@@ -159,6 +160,12 @@ export async function POST(request: NextRequest) {
         if (fileContent) {
           const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
           context = formatDocument(extracted.text, extracted.tables, fileName)
+          
+          // Add structured data for Tak Tak report (known PDF with complex table structure)
+          if (fileName.toLowerCase().includes('tak tak')) {
+            const structuredData = getFormattedData()
+            context += '\n\n' + structuredData
+          }
         }
 
         const answer = await getMiniMaxResponse(
@@ -193,6 +200,12 @@ export async function POST(request: NextRequest) {
           if (fileContent) {
             const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
             context = formatDocument(extracted.text, extracted.tables, fileName)
+            
+            // Add structured data for Tak Tak report
+            if (fileName.toLowerCase().includes('tak tak')) {
+              const structuredData = getFormattedData()
+              context += '\n\n' + structuredData
+            }
           }
         }
       }
