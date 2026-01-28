@@ -63,15 +63,27 @@ export async function listKnowledgeBaseFiles(folderId: string) {
 // Download file content
 export async function downloadFile(fileId: string, mimeType: string): Promise<Buffer | null> {
   try {
-    // For supported document types, get content
+    // For Excel files, use export endpoint (more reliable for Google Drive)
+    const isExcel = mimeType.includes('excel') || mimeType.includes('spreadsheet')
+    
+    if (isExcel) {
+      // Export Excel from Google Drive
+      const response = await drive.files.export({
+        fileId,
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      }, {
+        responseType: 'arraybuffer'
+      })
+      return Buffer.from(response.data as ArrayBuffer)
+    }
+    
+    // For other supported types, use alt=media
     const supportedTypes = [
       'application/pdf',
       'text/plain',
       'application/msword',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'text/csv',
-      'application/vnd.ms-excel',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      'text/csv'
     ]
     
     if (!supportedTypes.includes(mimeType)) {
@@ -90,7 +102,7 @@ export async function downloadFile(fileId: string, mimeType: string): Promise<Bu
     return Buffer.from(response.data as ArrayBuffer)
     
   } catch (error: any) {
-    console.error('Error downloading file:', error.message)
+    console.error('Error downloading file:', error.message, error.code)
     return null
   }
 }
