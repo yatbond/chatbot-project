@@ -89,8 +89,9 @@ export async function downloadFile(fileId: string, mimeType: string, fileName?: 
       responseType: 'arraybuffer'
     })
 
-    console.log('Download successful, size:', response.data.byteLength)
-    return Buffer.from(response.data as ArrayBuffer)
+    const data = response.data as ArrayBuffer
+    console.log('Download successful, size:', data.byteLength)
+    return Buffer.from(data)
     
   } catch (error: any) {
     console.error('Error downloading file:', error.message, error.code)
