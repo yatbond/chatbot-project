@@ -1,9 +1,8 @@
-// Excel Financial Data Parser - Improved
+// Excel Financial Data Parser - Debug version
 import * as XLSX from 'xlsx'
 
 export interface ExcelFinancialData {
   project?: string
-  report_date?: string
   gross_profit?: {
     before_reconciliation?: {
       tender?: string
@@ -27,13 +26,8 @@ export interface ExcelFinancialData {
 
 function isNumeric(val: any): boolean {
   if (val === null || val === undefined || val === '') return false
-  return !isNaN(Number(String(val).replace(/[,$]/g, '')))
-}
-
-function cleanNumber(val: any): string {
-  if (val === null || val === undefined || val === '') return 'N/A'
-  const numStr = String(val).replace(/[,$]/g, '').trim()
-  return isNumeric(numStr) ? numStr : 'N/A'
+  const str = String(val).replace(/[,$]/g, '').trim()
+  return !isNaN(Number(str)) && str !== ''
 }
 
 export function parseExcelFinancialData(buffer: Buffer): ExcelFinancialData | null {
@@ -41,16 +35,31 @@ export function parseExcelFinancialData(buffer: Buffer): ExcelFinancialData | nu
     const workbook = XLSX.read(buffer, { type: 'buffer' })
     const sheetName = workbook.SheetNames[0]
     const worksheet = workbook.Sheets[sheetName]
-    
-    // Get raw data as array of arrays
     const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][]
     
-    console.log('Excel sheet has', data.length, 'rows')
+    console.log('=== EXCEL PARSER DEBUG ===')
+    console.log('Sheet:', sheetName, 'Rows:', data.length)
     
-    const result: ExcelFinancialData = {}
+    // Find ALL numeric rows with their content
+    console.log('\n--- ALL ROWS WITH NUMERIC DATA ---')
+    for (let i = 0; i < Math.min(data.length, 50); i++) {
+      const row = data[i]
+      if (!row) continue
+      
+      const rowStr = String(row).substring(0, 100)
+      const hasNumeric = row.some(cell => isNumeric(cell))
+      const numericCount = row.filter(cell => isNumeric(cell)).length
+      
+      if (hasNumeric) {
+        console.log(`Row ${i}: ${numericCount} numeric values`)
+        console.log(`  Content: ${rowStr}`)
+        console.log(`  Values: ${row.map((c: any) => cleanNumber(c)).slice(0, 8).join(', ')}`)
+      }
+    }
     
-    // Find rows containing "Gross Profit"
-    const grossProfitRows: { row: any[], index: number, type: string }[] = []
+    // Look for "Gross Profit" section
+    console.log('\n--- SEARCHING FOR GROSS PROFIT ---')
+    let gpSectionFound = false
     
     for (let i = 0; i < data.length; i++) {
       const row = data[i]
@@ -58,133 +67,49 @@ export function parseExcelFinancialData(buffer: Buffer): ExcelFinancialData | nu
       
       const rowStr = String(row).toLowerCase()
       
-      if (rowStr.includes('gross profit')) {
-        // Determine if it's before or after
-        let type = 'before'
-        if (rowStr.includes('after') || rowStr.includes('reconciliation')) {
-          type = 'after'
-        }
-        grossProfitRows.push({ row, index: i, type })
-        console.log(`Found Gross Profit row at index ${i}, type: ${type}`)
-      }
-    }
-    
-    // Process each Gross Profit section
-    for (const gpRow of grossProfitRows) {
-      const { row, index, type } = gpRow
-      
-      // Find the data row (look for numeric values in nearby rows)
-      let dataRow: any[] | null = null
-      
-      // Search 1-3 rows below for data
-      for (let offset = 1; offset <= 3; offset++) {
-        const checkRow = data[index + offset]
-        if (!checkRow) continue
+      if (rowStr.includes('gross profit') && !rowStr.includes('after')) {
+        gpSectionFound = true
+        console.log(`BEFORE section at row ${i}:`)
+        console.log(`  ${String(row).substring(0, 150)}`)
         
-        // Count numeric values in this row
-        let numericCount = 0
-        for (const cell of checkRow) {
-          if (isNumeric(cell)) numericCount++
-        }
-        
-        // If row has enough numeric values, it's likely the data row
-        if (numericCount >= 3) {
-          dataRow = checkRow
-          console.log(`Data row for ${type} at index ${index + offset}, ${numericCount} numeric values`)
-          break
+        // Show the NEXT few rows with their numeric values
+        for (let j = i + 1; j <= i + 5; j++) {
+          const nextRow = data[j]
+          if (!nextRow) continue
+          const nextRowStr = String(nextRow).substring(0, 100)
+          const numericCount = nextRow.filter(cell => isNumeric(cell)).length
+          console.log(`  Row ${j} (${numericCount} nums): ${nextRowStr}`)
+          console.log(`    Values: ${nextRow.map((c: any) => cleanNumber(c)).slice(0, 8).join(', ')}`)
         }
       }
       
-      // Also check the row above for data (sometimes headers are below)
-      if (!dataRow) {
-        for (let offset = 1; offset <= 2; offset++) {
-          const checkRow = data[index - offset]
-          if (!checkRow) continue
-          
-          let numericCount = 0
-          for (const cell of checkRow) {
-            if (isNumeric(cell)) numericCount++
-          }
-          
-          if (numericCount >= 3) {
-            dataRow = checkRow
-            console.log(`Data row (above) for ${type} at index ${index - offset}, ${numericCount} numeric values`)
-            break
-          }
-        }
-      }
-      
-      // If we found a data row, extract the numbers
-      if (dataRow) {
-        const numbers = dataRow.filter(cell => isNumeric(cell)).map(cleanNumber)
-        console.log(`Extracted numbers for ${type}:`, numbers)
+      if ((rowStr.includes('gross profit') && rowStr.includes('after')) || 
+          rowStr.includes('reconciliation') && rowStr.includes('gross')) {
+        console.log(`AFTER section at row ${i}:`)
+        console.log(`  ${String(row).substring(0, 150)}`)
         
-        if (numbers.length >= 4) {
-          if (!result.gross_profit) result.gross_profit = { 
-            before_reconciliation: {}, 
-            after_reconciliation: {} 
-          }
-          
-          if (type === 'before') {
-            result.gross_profit.before_reconciliation = {
-              tender: numbers[0],
-              first_working: numbers[1],
-              business_plan: numbers[2],
-              audit_report_wip: numbers[3],
-              projection: numbers[4] || 'N/A',
-              accrual: numbers[5] || 'N/A',
-              cash_flow: numbers[6] || 'N/A'
-            }
-          } else {
-            result.gross_profit.after_reconciliation = {
-              tender: numbers[0],
-              first_working: numbers[1],
-              business_plan: numbers[2],
-              projection: numbers[3],
-              accrual: numbers[4] || 'N/A',
-              cash_flow: numbers[5] || 'N/A'
-            }
-          }
+        for (let j = i + 1; j <= i + 5; j++) {
+          const nextRow = data[j]
+          if (!nextRow) continue
+          const nextRowStr = String(nextRow).substring(0, 100)
+          const numericCount = nextRow.filter(cell => isNumeric(cell)).length
+          console.log(`  Row ${j} (${numericCount} nums): ${nextRowStr}`)
+          console.log(`    Values: ${nextRow.map((c: any) => cleanNumber(c)).slice(0, 8).join(', ')}`)
         }
       }
     }
     
-    // Also try to extract ALL numeric rows from the sheet
-    // This is a fallback in case the Gross Profit section isn't found
-    if (!result.gross_profit) {
-      console.log('No Gross Profit section found, searching for numeric rows...')
-      
-      for (let i = 0; i < Math.min(data.length, 50); i++) {
+    if (!gpSectionFound) {
+      console.log('NO Gross Profit section found!')
+      console.log('Showing first 10 rows:')
+      for (let i = 0; i < Math.min(10, data.length); i++) {
         const row = data[i]
-        if (!row || row.length < 2) continue
-        
-        const rowStr = String(row).toLowerCase()
-        
-        // Look for rows that have "Gross Profit" in first column
-        const firstCell = String(row[0] || '').toLowerCase()
-        if (firstCell.includes('gross profit')) {
-          const numbers = row.filter(cell => isNumeric(cell)).map(cleanNumber)
-          console.log(`Found Gross Profit at row ${i}:`, numbers)
-          
-          if (numbers.length >= 4) {
-            result.gross_profit = { before_reconciliation: {}, after_reconciliation: {} }
-            result.gross_profit.before_reconciliation = {
-              tender: numbers[0],
-              first_working: numbers[1],
-              business_plan: numbers[2],
-              audit_report_wip: numbers[3],
-              projection: numbers[4] || 'N/A',
-              accrual: numbers[5] || 'N/A',
-              cash_flow: numbers[6] || 'N/A'
-            }
-          }
-          break
-        }
+        if (!row) continue
+        console.log(`Row ${i}: ${String(row).substring(0, 120)}`)
       }
     }
     
-    console.log('Final parsed result:', JSON.stringify(result, null, 2))
-    return result
+    return { gross_profit: { before_reconciliation: {}, after_reconciliation: {} } }
     
   } catch (error) {
     console.error('Error parsing Excel:', error)
@@ -192,11 +117,13 @@ export function parseExcelFinancialData(buffer: Buffer): ExcelFinancialData | nu
   }
 }
 
+function cleanNumber(val: any): string {
+  if (val === null || val === undefined || val === '') return 'N/A'
+  return String(val).trim()
+}
+
 export function formatExcelData(data: ExcelFinancialData, fileName: string): string {
-  let output = `\n\n=== EXTRACTED DATA FROM ${fileName} ===\n`
-  output += `Source: Excel Spreadsheet\n\n`
-  
-  if (data.project) output += `Project: ${data.project}\n`
+  let output = `\n\n=== EXTRACTED DATA FROM ${fileName} ===\nSource: Excel Spreadsheet\n\n`
   
   const gp = data.gross_profit
   if (gp?.before_reconciliation) {
