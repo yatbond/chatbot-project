@@ -36,7 +36,12 @@ export async function GET(request: NextRequest) {
       const fileContent = await downloadFile(fileId, mimeType)
       
       if (!fileContent) {
-        return NextResponse.json({ error: 'Failed to download file', fileId })
+        return NextResponse.json({ 
+          error: 'Failed to download file', 
+          fileId,
+          mimeType,
+          note: 'Check Vercel function logs for detailed error'
+        })
       }
 
       let result: any = {
