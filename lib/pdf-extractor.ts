@@ -1,21 +1,25 @@
 // PDF Text Extraction with Table Detection
-// Uses pdf-parse for text extraction and pattern recognition for tables
+// Uses pdfjs-dist for better table extraction from complex PDFs
 
-const fs = require('fs')
-const path = require('path')
+import * as pdfjsLib from 'pdfjs-dist'
 
-// Try to import pdf-parse, fallback to simple extraction
-let pdfParse: ((dataBuffer: Buffer) => Promise<any>) | null = null
-try {
-  pdfParse = require('pdf-parse')
-} catch (e) {
-  console.log('pdf-parse not installed, using basic extraction')
+// Set up worker for pdfjs-dist
+if (typeof window !== 'undefined') {
+  // For browser environment
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
+} else {
+  // For Node.js environment
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `pdfjs-dist/build/pdf.worker.mjs`
 }
 
 interface TableCandidate {
   rows: string[][]
   confidence: number
   page: number
+}
+
+interface TableRegion {
+  rows: { y: number; items: any[] }[]
 }
 
 interface ExtractionResult {
@@ -31,6 +35,7 @@ interface ExtractionResult {
 
 /**
  * Extract text and detect tables from PDF buffer
+ * Uses pdfjs-dist for better table structure extraction
  */
 export async function extractTextAndTables(pdfBuffer: Buffer, fileName: string): Promise<ExtractionResult> {
   const result: ExtractionResult = {
@@ -44,26 +49,45 @@ export async function extractTextAndTables(pdfBuffer: Buffer, fileName: string):
     }
   }
 
-  if (!pdfParse) {
-    // Fallback: Basic text extraction
-    result.text = '[PDF text extraction requires pdf-parse package. Install with: npm install pdf-parse]'
-    return result
-  }
-
   try {
-    const data = await pdfParse(pdfBuffer)
-    
-    result.text = data.text
-    result.pageCount = data.numpages
-    
-    // Detect tables from the extracted text
-    result.tables = detectTables(data.text)
-    
-    // Check for images (basic detection)
-    result.metadata.hasImages = detectImages(data.text)
-    
+    // Load PDF document
+    const loadingTask = pdfjsLib.getDocument({ data: pdfBuffer })
+    const pdf = await loadingTask.promise
+    result.pageCount = pdf.numPages
+
+    let fullText = ''
+    const allTables: TableCandidate[] = []
+
+    // Process each page
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum)
+
+      // Extract text content
+      const textContent = await page.getTextContent()
+      const pageText = textContent.items
+        .map((item: any) => item.str)
+        .join(' ')
+      fullText += pageText + '\n\n'
+
+      // Extract text items with position info for table detection
+      const textItems = textContent.items.map((item: any) => ({
+        str: item.str,
+        x: item.transform[4],
+        y: item.transform[5],
+        width: item.width || 0,
+        height: item.height || 0
+      }))
+
+      // Detect tables on this page
+      const pageTables = detectTablesFromItems(textItems, pageNum)
+      allTables.push(...pageTables)
+    }
+
+    result.text = fullText
+    result.tables = allTables
+
     console.log(`Extracted ${result.pageCount} pages, ${result.tables.length} tables from ${fileName}`)
-    
+
   } catch (error: any) {
     console.error('PDF extraction error:', error)
     result.text = `Error extracting PDF: ${error.message}`
@@ -73,139 +97,141 @@ export async function extractTextAndTables(pdfBuffer: Buffer, fileName: string):
 }
 
 /**
- * Detect table-like structures in text
+ * Detect tables from PDF text items with position information
+ * Handles complex tables with merged cells
  */
-function detectTables(text: string): TableCandidate[] {
+function detectTablesFromItems(textItems: any[], pageNum: number): TableCandidate[] {
   const tables: TableCandidate[] = []
-  
-  // Split text into lines
-  const lines = text.split('\n')
-  
-  let currentTable: string[][] = []
-  let tableStart = -1
-  let emptyLineCount = 0
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim()
-    
-    // Detect table row patterns
-    // Tables often have: pipes |, tabs, or consistent spacing with numbers
-    const hasPipe = line.includes('|')
-    const hasMultipleTabs = (line.match(/\t/g) || []).length >= 2
-    const hasConsistentSpacing = detectConsistentSpacing(line)
-    const hasNumbers = /\d/.test(line)
-    
-    const isTableRow = hasPipe || hasMultipleTabs || (hasConsistentSpacing && hasNumbers)
-    
-    if (isTableRow && line.length > 5) {
-      // This looks like a table row
-      const cells = splitTableRow(line)
-      
-      if (cells.length >= 2) {
-        if (tableStart === -1) {
-          tableStart = i
-          currentTable = []
-        }
-        currentTable.push(cells)
-        emptyLineCount = 0
-      }
-    } else if (line === '' || line.match(/^[\s-]{10,}$/)) {
-      // Empty line or separator
-      if (currentTable.length > 2) {
-        // This is likely a table
-        tables.push({
-          rows: currentTable,
-          confidence: calculateTableConfidence(currentTable),
-          page: 1 // Would need page tracking for accuracy
-        })
-      }
-      currentTable = []
-      tableStart = -1
-      emptyLineCount++
+
+  if (textItems.length === 0) return tables
+
+  // Group text items by approximate Y position (same row)
+  const rowThreshold = 5 // pixels
+  const rows: { y: number; items: any[] }[] = []
+
+  for (const item of textItems) {
+    const y = Math.round(item.y / rowThreshold) * rowThreshold
+
+    // Find or create row
+    let row = rows.find(r => Math.abs(r.y - y) < rowThreshold)
+    if (!row) {
+      row = { y, items: [] }
+      rows.push(row)
     }
-    
-    // Skip too many empty lines
-    if (emptyLineCount > 5) break
+    row.items.push(item)
   }
-  
-  // Don't forget the last table
-  if (currentTable.length > 2) {
-    tables.push({
-      rows: currentTable,
-      confidence: calculateTableConfidence(currentTable),
-      page: 1
-    })
+
+  // Sort rows by Y position (top to bottom)
+  rows.sort((a, b) => b.y - a.y)
+
+  // Detect if this looks like a table
+  // Tables typically have: multiple columns, numeric data, consistent spacing
+  const tableRegions = identifyTableRegions(rows)
+
+  for (const region of tableRegions) {
+    const tableRows = extractTableRows(region.rows)
+    if (tableRows.length >= 2) {
+      tables.push({
+        rows: tableRows,
+        confidence: calculateTableConfidence(tableRows),
+        page: pageNum
+      })
+    }
   }
-  
+
   return tables
 }
 
 /**
- * Split a table row into cells
+ * Identify regions that look like tables based on structure
  */
-function splitTableRow(row: string): string[] {
-  if (row.includes('|')) {
-    return row.split('|').map(cell => cell.trim()).filter(cell => cell)
+function identifyTableRegions(rows: { y: number; items: any[] }[]): TableRegion[] {
+  const regions: TableRegion[] = []
+  let currentRegion: { y: number; items: any[] }[] = []
+  let rowCount = 0
+
+  for (const row of rows) {
+    const items = row.items.sort((a, b) => a.x - b.x)
+    const hasMultipleColumns = items.length >= 2
+    const hasNumbers = items.some(item => /\d/.test(item.str))
+    const hasConsistentSpacing = checkColumnSpacing(items)
+
+    const isTableRow = hasMultipleColumns && (hasNumbers || hasConsistentSpacing)
+
+    if (isTableRow) {
+      currentRegion.push(row)
+      rowCount++
+    } else {
+      if (rowCount >= 3) {
+        regions.push({ rows: [...currentRegion] })
+      }
+      currentRegion = []
+      rowCount = 0
+    }
   }
-  
-  if ((row.match(/\t/g) || []).length >= 2) {
-    return row.split('\t').map(cell => cell.trim()).filter(cell => cell)
+
+  // Don't forget last region
+  if (rowCount >= 3) {
+    regions.push({ rows: [...currentRegion] })
   }
-  
-  // Try to detect CSV-like patterns
-  const commaCount = (row.match(/,/g) || []).length
-  if (commaCount >= 2) {
-    return row.split(',').map(cell => cell.trim()).filter(cell => cell)
-  }
-  
-  return [row]
+
+  return regions
 }
 
 /**
- * Detect if a line has consistent spacing (potential table column alignment)
+ * Check if items have consistent column spacing
  */
-function detectConsistentSpacing(line: string): boolean {
-  const words = line.split(/\s+/)
-  if (words.length < 3) return false
-  
-  // Check if most words are followed by similar number of spaces
-  const spacing = words.slice(0, -1).map(word => line.indexOf(word) + word.length)
-  const spacingDiffs = spacing.map((pos, i) => Math.abs(pos - (i * 10)))
-  
-  return spacingDiffs.every(diff => diff < 3)
+function checkColumnSpacing(items: any[]): boolean {
+  if (items.length < 2) return false
+
+  const positions = items.map(item => item.x)
+  const gaps: number[] = []
+
+  for (let i = 1; i < positions.length; i++) {
+    gaps.push(positions[i] - positions[i - 1])
+  }
+
+  // Check if gaps are somewhat consistent
+  const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length
+  const variance = gaps.reduce((sum, gap) => sum + Math.pow(gap - avgGap, 2), 0) / gaps.length
+
+  return variance < avgGap * avgGap * 0.5 // Low variance = consistent spacing
 }
 
 /**
- * Calculate confidence that a detected table is actually a table
+ * Extract table rows from a region
+ */
+function extractTableRows(regionRows: { y: number; items: any[] }[]): string[][] {
+  const tableRows: string[][] = []
+
+  for (const row of regionRows) {
+    const items = row.items.sort((a: any, b: any) => a.x - b.x)
+    const cells = items.map((item: any) => item.str.trim()).filter((s: string) => s)
+    if (cells.length >= 2) {
+      tableRows.push(cells)
+    }
+  }
+
+  return tableRows
+}
+
+/**
+ * Calculate confidence that detected data is actually a table
  */
 function calculateTableConfidence(rows: string[][]): number {
-  if (rows.length < 3) return 0
-  
+  if (rows.length < 2) return 0
+
   const columnCounts = rows.map(row => row.length)
   const consistentColumns = columnCounts.every(count => count === columnCounts[0])
   const hasNumbers = rows.some(row => row.some(cell => /\d/.test(cell)))
-  
+  const hasHeaders = rows[0].some(cell => /^[A-Z]/.test(cell))
+
   let confidence = 0.5
   if (consistentColumns) confidence += 0.2
-  if (hasNumbers) confidence += 0.2
-  if (rows.length >= 5) confidence += 0.1
-  
-  return Math.min(confidence, 1.0)
-}
+  if (hasNumbers) confidence += 0.15
+  if (hasHeaders) confidence += 0.15
 
-/**
- * Basic image detection in PDF text
- */
-function detectImages(text: string): boolean {
-  const imageIndicators = [
-    /image/i,
-    /figure/i,
-    /picture/i,
-    /photo/i,
-    /graphics/i
-  ]
-  
-  return imageIndicators.some(pattern => pattern.test(text))
+  return Math.min(confidence, 1.0)
 }
 
 /**
@@ -213,20 +239,20 @@ function detectImages(text: string): boolean {
  */
 export function formatTablesForAI(tables: TableCandidate[]): string {
   if (tables.length === 0) return 'No tables detected in documents.'
-  
+
   let formatted = `=== TABLES DETECTED: ${tables.length} ===\n\n`
-  
+
   tables.forEach((table, index) => {
     formatted += `--- Table ${index + 1} (Confidence: ${(table.confidence * 100).toFixed(0)}%) ---\n`
-    
+
     // Convert table to markdown-style format
     table.rows.forEach(row => {
       formatted += `| ${row.join(' | ')} |\n`
     })
-    
+
     formatted += '\n'
   })
-  
+
   return formatted
 }
 
@@ -235,8 +261,20 @@ export function formatTablesForAI(tables: TableCandidate[]): string {
  */
 export function formatTextForAI(text: string, tables: TableCandidate[]): string {
   const tableSection = tables.length > 0 ? `\n\n${formatTablesForAI(tables)}\n` : ''
-  
+
   return `=== DOCUMENT CONTENT ===\n\n${text}${tableSection}`
 }
 
-export { detectTables }
+/**
+ * Fallback: Simple text extraction using pdf-parse
+ */
+export async function extractTextSimple(pdfBuffer: Buffer): Promise<string> {
+  try {
+    const pdfParse = require('pdf-parse')
+    const data = await pdfParse(pdfBuffer)
+    return data.text
+  } catch (error) {
+    console.error('Simple extraction error:', error)
+    return ''
+  }
+}
