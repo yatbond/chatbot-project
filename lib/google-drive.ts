@@ -1,23 +1,40 @@
 import { google } from 'googleapis'
+import { existsSync } from 'fs'
+import { join } from 'path'
 
-// Use OAuth credentials from environment variables
-const clientId = process.env.GOOGLE_CLIENT_ID
-const clientSecret = process.env.GOOGLE_CLIENT_SECRET
-const redirectUri = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/auth/callback/google'
+// Load service account credentials from environment variable or file
+let serviceAccount = null
 
-// Create OAuth2 client
-const oauth2Client = new google.auth.OAuth2(
-  clientId,
-  clientSecret,
-  redirectUri
-)
-
-// Set credentials if access token is available (from session/auth)
-export function setAccessToken(accessToken: string) {
-  oauth2Client.setCredentials({ access_token: accessToken })
+// First try to load from SERVICE_ACCOUNT_JSON env var
+if (process.env.SERVICE_ACCOUNT_JSON) {
+  try {
+    serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON)
+  } catch (error) {
+    console.error('Error parsing SERVICE_ACCOUNT_JSON:', error)
+  }
+}
+// Fallback to file
+else {
+  const serviceAccountPath = join(process.cwd(), 'service-account.json')
+  if (existsSync(serviceAccountPath)) {
+    try {
+      const fs = require('fs')
+      serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'))
+    } catch (error) {
+      console.error('Error loading service account:', error)
+    }
+  }
 }
 
-const drive = google.drive({ version: 'v3', auth: oauth2Client })
+// Create JWT client with service account
+const jwtClient = new google.auth.JWT(
+  serviceAccount?.client_email,
+  undefined,
+  serviceAccount?.private_key,
+  ['https://www.googleapis.com/auth/drive.readonly']
+)
+
+const drive = google.drive({ version: 'v3', auth: jwtClient })
 
 // List files in the knowledge base folder
 export async function listKnowledgeBaseFiles(folderId: string) {
@@ -102,10 +119,10 @@ export async function getFolderInfo(folderId: string) {
 // Test connection
 export async function testConnection() {
   try {
-    if (!clientId || !clientSecret) {
+    if (!serviceAccount) {
       return {
         connected: false,
-        error: 'GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set'
+        error: 'No service account credentials found (SERVICE_ACCOUNT_JSON env or service-account.json file)'
       }
     }
     const about = await drive.about.get({
@@ -113,7 +130,7 @@ export async function testConnection() {
     })
     return {
       connected: true,
-      user: about.data.user?.emailAddress || 'Connected with OAuth'
+      user: about.data.user?.emailAddress || 'Service account connected'
     }
   } catch (error: any) {
     return {
@@ -123,4 +140,4 @@ export async function testConnection() {
   }
 }
 
-export { drive, oauth2Client, setAccessToken }
+export { drive, jwtClient }
