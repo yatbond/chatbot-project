@@ -50,6 +50,38 @@ interface JsonData {
   }
 }
 
+// Parse filename to extract project number and name
+function parseFileName(fileName: string): { projectNo: string; projectName: string; hasJson: boolean } {
+  // Remove _data.json suffix if present
+  let name = fileName.replace('_data.json', '').replace('.pdf', '')
+  
+  // Extract project number (at the beginning - digits followed by space or dash)
+  const match = name.match(/^(\d+)\s*[-–]\s*/)
+  let projectNo = ''
+  let projectName = name
+  
+  if (match) {
+    projectNo = match[1]
+    projectName = name.substring(match[0].length).trim()
+  } else {
+    // Try to get first word as project number
+    const firstWord = name.split(/[\s-–]/)[0]
+    if (firstWord && /^\d+$/.test(firstWord)) {
+      projectNo = firstWord
+      projectName = name.substring(firstWord.length).trim().replace(/^[-–]\s*/, '')
+    }
+  }
+  
+  // Clean up project name
+  projectName = projectName.replace(/\s+Financial\s*Report.*/i, '').trim()
+  
+  return {
+    projectNo: projectNo || 'Unknown',
+    projectName: projectName || name,
+    hasJson: fileName.endsWith('_data.json')
+  }
+}
+
 async function extractTextFromFile(buffer: Buffer, mimeType: string, fileName: string) {
   if (mimeType === 'application/pdf' && pdfParse) {
     try {
@@ -64,7 +96,6 @@ async function extractTextFromFile(buffer: Buffer, mimeType: string, fileName: s
     }
   }
   
-  // For other file types, return basic info
   return {
     text: `[File: ${fileName}]`,
     tables: [],
@@ -197,28 +228,76 @@ export async function POST(request: NextRequest) {
     const jsonFiles = files.filter((f: any) => isJsonFile(f.name))
     const pdfFiles = files.filter((f: any) => !isJsonFile(f.name))
 
-    // Create a map of JSON files for quick lookup
+    // Create a map of JSON files for quick lookup (key = base name lowercase)
     const jsonMap = new Map<string, any>()
     jsonFiles.forEach((f: any) => {
-      jsonMap.set(f.name.toLowerCase(), f)
+      const baseName = f.name.replace('_data.json', '').toLowerCase()
+      jsonMap.set(baseName, f)
     })
+
+    // Group files by project (merge PDF + JSON into single entry)
+    const projectMap = new Map<string, any>()
+    
+    // Process PDFs
+    pdfFiles.forEach((f: any) => {
+      const parsed = parseFileName(f.name)
+      const key = `${parsed.projectNo}-${parsed.projectName}`.toLowerCase()
+      projectMap.set(key, {
+        pdfFile: f,
+        jsonFile: null,
+        hasJson: false,
+        projectNo: parsed.projectNo,
+        projectName: parsed.projectName,
+        displayName: `${parsed.projectNo} - ${parsed.projectName}`
+      })
+    })
+    
+    // Process JSONs and merge with PDFs
+    jsonFiles.forEach((f: any) => {
+      const parsed = parseFileName(f.name)
+      const key = `${parsed.projectNo}-${parsed.projectName}`.toLowerCase()
+      
+      if (projectMap.has(key)) {
+        // JSON exists, update to use JSON
+        const existing = projectMap.get(key)
+        existing.jsonFile = f
+        existing.hasJson = true
+      } else {
+        // JSON only (no PDF)
+        projectMap.set(key, {
+          pdfFile: null,
+          jsonFile: f,
+          hasJson: true,
+          projectNo: parsed.projectNo,
+          projectName: parsed.projectName,
+          displayName: `${parsed.projectNo} - ${parsed.projectName}`
+        })
+      }
+    })
+
+    // Convert to array and sort
+    const projects = Array.from(projectMap.values())
+      .sort((a, b) => a.projectNo.localeCompare(b.projectNo, undefined, { numeric: true }))
 
     // Handle special commands
     const lowerQuestion = question.toLowerCase().trim()
     
     // === LIST REPORTS COMMAND ===
     if (lowerQuestion === 'hi' || lowerQuestion === 'hello' || lowerQuestion === 'list' || lowerQuestion === 'list reports' || lowerQuestion === 'show reports') {
-      // Show both PDFs and JSON files
-      const allDisplayFiles = [...pdfFiles, ...jsonFiles]
-      const reportList = allDisplayFiles.map((file: any, index: number) => {
-        const icon = file.mimeType?.includes('pdf') ? '📄' : '📁'
-        const date = file.modifiedTime ? new Date(file.modifiedTime).toLocaleDateString() : ''
-        return `${index + 1}. ${icon} **${file.name}** ${date}`
+      const reportList = projects.map((project: any, index: number) => {
+        const icon = project.hasJson ? '✅' : '📄'
+        return `${index + 1}. ${icon} **${project.projectNo} - ${project.projectName}**`
       }).join('\n')
 
       return NextResponse.json({
-        answer: `👋 **Hello! Here are your financial reports:**\n\n${reportList}\n\n📝 **Enter the number (1-${allDisplayFiles.length})** of the report you want to analyze.`,
-        files: allDisplayFiles.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
+        answer: `👋 **Hello! Here are your financial reports:**\n\n${reportList}\n\n📝 **Enter the number (1-${projects.length})** of the project you want to analyze.`,
+        files: projects.map((p: any, i: number) => ({ 
+          id: p.hasJson ? p.jsonFile.id : p.pdfFile.id, 
+          projectNo: p.projectNo,
+          projectName: p.projectName,
+          hasJson: p.hasJson,
+          index: i + 1 
+        })),
         selectedReportIndex: null,
         showList: true
       })
@@ -226,184 +305,115 @@ export async function POST(request: NextRequest) {
 
     // === SELECT REPORT COMMAND ===
     if (selectedReportIndex !== undefined && selectedReportIndex !== null) {
-      const allFiles = [...pdfFiles, ...jsonFiles]
       const index = selectedReportIndex - 1
       
-      if (index >= 0 && index < allFiles.length) {
-        const file = allFiles[index]
-        const fileName = file.name || 'unknown'
+      if (index >= 0 && index < projects.length) {
+        const project = projects[index]
+        const fileName = project.hasJson ? project.jsonFile.name : project.pdfFile.name
+        const fileId = project.hasJson ? project.jsonFile.id : project.pdfFile.id
+        const mimeType = project.hasJson ? 'application/json' : (project.pdfFile.mimeType || 'application/octet-stream')
         
-        // Check if this is a JSON file
-        if (isJsonFile(fileName)) {
-          // Use pre-processed JSON data
-          if (!file.id) {
-            return NextResponse.json({ error: 'File ID is missing' }, { status: 400 })
-          }
-          const fileContent = await downloadFile(file.id, 'application/json')
-          let context = ''
-          
-          if (fileContent) {
+        // Download and process
+        const fileContent = await downloadFile(fileId, mimeType)
+        let context = ''
+
+        if (fileContent) {
+          if (project.hasJson) {
+            // Use pre-processed JSON data
             try {
               const jsonData = JSON.parse(fileContent.toString())
               context = formatJsonData(jsonData, fileName)
             } catch (e) {
               context = `[Error parsing JSON: ${e}]`
             }
-          }
-
-          const answer = await getMiniMaxResponse(
-            `Focus ONLY on this report (${fileName}). ${question}`,
-            context
-          )
-
-          return NextResponse.json({
-            answer,
-            files: allFiles.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
-            selectedReportIndex: selectedReportIndex,
-            selectedFileName: fileName,
-            showList: false
-          })
-        } else {
-          // This is a PDF - check if JSON version exists
-          const jsonName = getCorrespondingJsonName(fileName)
-          const jsonFile = jsonMap.get(jsonName.toLowerCase())
-          
-          if (jsonFile) {
-            // Use JSON version instead
-            if (!jsonFile.id) {
-              return NextResponse.json({ error: 'JSON File ID is missing' }, { status: 400 })
-            }
-            const fileContent = await downloadFile(jsonFile.id, 'application/json')
-            let context = ''
-            
-            if (fileContent) {
-              try {
-                const jsonData = JSON.parse(fileContent.toString())
-                context = formatJsonData(jsonData, jsonFile.name)
-              } catch (e) {
-                context = `[Error parsing JSON: ${e}]`
-              }
-            }
-
-            const answer = await getMiniMaxResponse(
-              `Focus ONLY on this report (${fileName}). ${question}`,
-              context
-            )
-
-            return NextResponse.json({
-              answer,
-              files: allFiles.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
-              selectedReportIndex: selectedReportIndex,
-              selectedFileName: fileName,
-              showList: false
-            })
           } else {
-            // No JSON version - fall back to PDF parsing
-            if (!file.id) {
-              return NextResponse.json({ error: 'File ID is missing' }, { status: 400 })
-            }
-            const mimeType = file.mimeType || 'application/octet-stream'
-            const fileContent = await downloadFile(file.id, mimeType)
-            let context = ''
-
-            if (fileContent) {
-              const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
-              context = formatDocument(extracted.text, extracted.tables, fileName)
-              
-              // Add structured data for all financial reports
-              const financialData = extractFinancialData(extracted.text)
-              context += financialData
-            }
-
-            const answer = await getMiniMaxResponse(
-              `Focus ONLY on this report (${fileName}). ${question}`,
-              context
-            )
-
-            return NextResponse.json({
-              answer,
-              files: allFiles.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
-              selectedReportIndex: selectedReportIndex,
-              selectedFileName: fileName,
-              showList: false
-            })
+            // Fall back to PDF parsing
+            const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
+            context = formatDocument(extracted.text, extracted.tables, fileName)
+            const financialData = extractFinancialData(extracted.text)
+            context += financialData
           }
         }
+
+        const answer = await getMiniMaxResponse(
+          `Focus ONLY on this report (${project.projectNo} - ${project.projectName}). ${question}`,
+          context
+        )
+
+        return NextResponse.json({
+          answer,
+          files: projects.map((p: any, i: number) => ({ 
+            id: p.hasJson ? p.jsonFile.id : p.pdfFile.id, 
+            projectNo: p.projectNo,
+            projectName: p.projectName,
+            hasJson: p.hasJson,
+            index: i + 1 
+          })),
+          selectedReportIndex: selectedReportIndex,
+          selectedFileName: `${project.projectNo} - ${project.projectName}`,
+          showList: false
+        })
       }
     }
 
-    // === DEFAULT: Ask about currently selected report or all files ===
+    // === DEFAULT: Ask about currently selected report or all projects ===
     let context = ''
-    let selectedFile = null
+    let selectedProject = null
 
     if (selectedReportIndex !== null && selectedReportIndex !== undefined) {
-      const allFiles = [...pdfFiles, ...jsonFiles]
       const index = selectedReportIndex - 1
       
-      if (index >= 0 && index < allFiles.length) {
-        selectedFile = allFiles[index]
-        const fileName = selectedFile.name || 'unknown'
+      if (index >= 0 && index < projects.length) {
+        selectedProject = projects[index]
+        const fileId = selectedProject.hasJson ? selectedProject.jsonFile.id : selectedProject.pdfFile.id
+        const mimeType = selectedProject.hasJson ? 'application/json' : (selectedProject.pdfFile.mimeType || 'application/octet-stream')
+        const fileName = selectedProject.hasJson ? selectedProject.jsonFile.name : selectedProject.pdfFile.name
         
-        if (isJsonFile(fileName)) {
-          // Use JSON
-          if (selectedFile.id) {
-            const fileContent = await downloadFile(selectedFile.id, 'application/json')
-            if (fileContent) {
-              try {
-                const jsonData = JSON.parse(fileContent.toString())
-                context = formatJsonData(jsonData, fileName)
-              } catch (e) {
-                context = `[Error parsing JSON: ${e}]`
-              }
+        const fileContent = await downloadFile(fileId, mimeType)
+        if (fileContent) {
+          if (selectedProject.hasJson) {
+            try {
+              const jsonData = JSON.parse(fileContent.toString())
+              context = formatJsonData(jsonData, fileName)
+            } catch (e) {
+              context = `[Error parsing JSON: ${e}]`
             }
-          }
-        } else {
-          // PDF - check for JSON version
-          const jsonName = getCorrespondingJsonName(fileName)
-          const jsonFile = jsonMap.get(jsonName.toLowerCase())
-          
-          if (jsonFile?.id) {
-            const fileContent = await downloadFile(jsonFile.id, 'application/json')
-            if (fileContent) {
-              try {
-                const jsonData = JSON.parse(fileContent.toString())
-                context = formatJsonData(jsonData, jsonFile.name)
-              } catch (e) {
-                context = `[Error parsing JSON: ${e}]`
-              }
-            }
-          } else if (selectedFile.id) {
-            // Fall back to PDF
-            const mimeType = selectedFile.mimeType || 'application/octet-stream'
-            const fileContent = await downloadFile(selectedFile.id, mimeType)
-            if (fileContent) {
-              const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
-              context = formatDocument(extracted.text, extracted.tables, fileName)
-              const financialData = extractFinancialData(extracted.text)
-              context += financialData
-            }
+          } else {
+            const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
+            context = formatDocument(extracted.text, extracted.tables, fileName)
+            const financialData = extractFinancialData(extracted.text)
+            context += financialData
           }
         }
       }
     }
 
-    // If no file selected and no specific file context, use all files
+    // If no project selected, list all
     if (!context) {
-      context = files.map((f: any) => `[FILE: ${f.name}]`).join('\n\n')
+      const projectList = projects.map((p: any) => 
+        `**${p.projectNo} - ${p.projectName}**${p.hasJson ? ' (accurate data available)' : ''}`
+      ).join('\n')
+      context = `Available projects:\n${projectList}`
     }
 
     const answer = await getMiniMaxResponse(
-      selectedFile && selectedFile.name
-        ? `About ${selectedFile.name}: ${question}` 
+      selectedProject 
+        ? `About ${selectedProject.projectNo} - ${selectedProject.projectName}: ${question}` 
         : question,
       context
     )
 
     return NextResponse.json({
       answer,
-      files: files.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
+      files: projects.map((p: any, i: number) => ({ 
+        id: p.hasJson ? p.jsonFile.id : p.pdfFile.id, 
+        projectNo: p.projectNo,
+        projectName: p.projectName,
+        hasJson: p.hasJson,
+        index: i + 1 
+      })),
       selectedReportIndex: selectedReportIndex ?? null,
-      selectedFileName: selectedFile?.name || null,
+      selectedFileName: selectedProject ? `${selectedProject.projectNo} - ${selectedProject.projectName}` : null,
       showList: false
     })
 
@@ -421,14 +431,15 @@ export async function GET() {
   const connectionTest = await testConnection()
 
   return NextResponse.json({
-    status: 'Chatbot v3 - Financial Report Analyzer with JSON Pre-processing',
+    status: 'Chatbot v4 - Financial Report Analyzer',
     connection: connectionTest,
     knowledgeBase: {
       folderId: folderId || 'not configured'
     },
     features: [
-      'Pre-processed JSON files for accurate data extraction',
-      'Falls back to PDF parsing if JSON not available'
+      'Smart project name extraction',
+      'Auto-detects JSON files for accurate data',
+      'Shows project number + name instead of filename'
     ]
   })
 }
