@@ -309,10 +309,19 @@ export async function POST(request: NextRequest) {
 
     // === SELECT REPORT COMMAND ===
     if (selectedReportIndex !== undefined && selectedReportIndex !== null) {
-      const index = selectedReportIndex - 1
+      let project = null
       
-      if (index >= 0 && index < projects.length) {
-        const project = projects[index]
+      // Check if it's a list number (1-21)
+      const listIndex = selectedReportIndex - 1
+      if (listIndex >= 0 && listIndex < projects.length) {
+        project = projects[listIndex]
+      } else {
+        // Check if it matches a project number (e.g., "990" matches project 990)
+        const inputNum = String(selectedReportIndex)
+        project = projects.find(p => p.projectNo === inputNum)
+      }
+      
+      if (project) {
         const fileName = project.hasJson ? project.jsonFile.name : project.pdfFile.name
         const fileId = project.hasJson ? project.jsonFile.id : project.pdfFile.id
         const mimeType = project.hasJson ? 'application/json' : (project.pdfFile.mimeType || 'application/octet-stream')
@@ -365,10 +374,17 @@ export async function POST(request: NextRequest) {
     let selectedProject = null
 
     if (selectedReportIndex !== null && selectedReportIndex !== undefined) {
-      const index = selectedReportIndex - 1
+      // Check if it's a list number (1-21)
+      const listIndex = selectedReportIndex - 1
+      if (listIndex >= 0 && listIndex < projects.length) {
+        selectedProject = projects[listIndex]
+      } else {
+        // Check if it matches a project number (e.g., "990" matches project 990)
+        const inputNum = String(selectedReportIndex)
+        selectedProject = projects.find(p => p.projectNo === inputNum)
+      }
       
-      if (index >= 0 && index < projects.length) {
-        selectedProject = projects[index]
+      if (selectedProject) {
         const fileId = selectedProject.hasJson ? selectedProject.jsonFile.id : selectedProject.pdfFile.id
         const mimeType = selectedProject.hasJson ? 'application/json' : (selectedProject.pdfFile.mimeType || 'application/octet-stream')
         const fileName = selectedProject.hasJson ? selectedProject.jsonFile.name : selectedProject.pdfFile.name
