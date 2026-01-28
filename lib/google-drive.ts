@@ -3,23 +3,30 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 
 // Load service account credentials from environment variable or file
-let serviceAccount = null
+let serviceAccount: any = null
 
 // First try to load from SERVICE_ACCOUNT_JSON env var
-if (process.env.SERVICE_ACCOUNT_JSON) {
+const serviceAccountJson = process.env.SERVICE_ACCOUNT_JSON
+console.log('SERVICE_ACCOUNT_JSON env present:', !!serviceAccountJson)
+console.log('SERVICE_ACCOUNT_JSON length:', serviceAccountJson?.length)
+
+if (serviceAccountJson) {
   try {
-    serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON)
+    serviceAccount = JSON.parse(serviceAccountJson)
+    console.log('Service account loaded successfully, client_email:', serviceAccount?.client_email)
   } catch (error) {
     console.error('Error parsing SERVICE_ACCOUNT_JSON:', error)
   }
 }
 // Fallback to file
 else {
+  console.log('SERVICE_ACCOUNT_JSON not found, trying file...')
   const serviceAccountPath = join(process.cwd(), 'service-account.json')
   if (existsSync(serviceAccountPath)) {
     try {
       const fs = require('fs')
       serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'))
+      console.log('Service account loaded from file, client_email:', serviceAccount?.client_email)
     } catch (error) {
       console.error('Error loading service account:', error)
     }
@@ -28,9 +35,9 @@ else {
 
 // Create JWT client with service account
 const jwtClient = new google.auth.JWT(
-  serviceAccount?.client_email,
+  serviceAccount?.client_email || undefined,
   undefined,
-  serviceAccount?.private_key,
+  serviceAccount?.private_key || undefined,
   ['https://www.googleapis.com/auth/drive.readonly']
 )
 
