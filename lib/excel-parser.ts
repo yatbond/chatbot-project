@@ -1,4 +1,4 @@
-// Excel Financial Data Parser
+// Excel Financial Data Parser - Improved
 import * as XLSX from 'xlsx'
 
 export interface ExcelFinancialData {
@@ -25,122 +25,165 @@ export interface ExcelFinancialData {
   }
 }
 
-function extractNumbers(row: any[]): string[] {
-  return row
-    .filter((c: any) => c !== undefined && c !== null && c !== '')
-    .map((c: any) => String(c).trim())
-    .filter((c: string) => /\d/.test(c))
+function isNumeric(val: any): boolean {
+  if (val === null || val === undefined || val === '') return false
+  return !isNaN(Number(String(val).replace(/[,$]/g, '')))
 }
 
-function isRowHeader(row: any[], keywords: string[]): boolean {
-  const rowStr = String(row).toLowerCase()
-  return keywords.some(k => rowStr.includes(k.toLowerCase()))
+function cleanNumber(val: any): string {
+  if (val === null || val === undefined || val === '') return 'N/A'
+  const numStr = String(val).replace(/[,$]/g, '').trim()
+  return isNumeric(numStr) ? numStr : 'N/A'
 }
 
 export function parseExcelFinancialData(buffer: Buffer): ExcelFinancialData | null {
   try {
-    console.log('Parsing Excel buffer, size:', buffer.length)
     const workbook = XLSX.read(buffer, { type: 'buffer' })
-    console.log('Sheet names:', workbook.SheetNames)
-    
     const sheetName = workbook.SheetNames[0]
     const worksheet = workbook.Sheets[sheetName]
+    
+    // Get raw data as array of arrays
     const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][]
     
-    console.log('Total rows:', data.length)
+    console.log('Excel sheet has', data.length, 'rows')
     
     const result: ExcelFinancialData = {}
     
-    // Find all numeric rows and their row numbers
-    const numericRows: { row: any[], index: number, numbers: string[] }[] = []
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i]
-      if (!row || row.length === 0) continue
-      const numbers = extractNumbers(row)
-      if (numbers.length >= 3) {
-        numericRows.push({ row, index: i, numbers })
-        console.log(`Row ${i}:`, row.slice(0, 8), '-> numbers:', numbers.slice(0, 7))
-      }
-    }
-    
-    // Look for "Gross Profit" section headers
-    let beforeStart = -1
-    let afterStart = -1
+    // Find rows containing "Gross Profit"
+    const grossProfitRows: { row: any[], index: number, type: string }[] = []
     
     for (let i = 0; i < data.length; i++) {
       const row = data[i]
       if (!row) continue
+      
       const rowStr = String(row).toLowerCase()
       
-      if (rowStr.includes('gross profit') && !rowStr.includes('after')) {
-        beforeStart = i
-        console.log('Found BEFORE section at row', i)
-      }
-      if (rowStr.includes('gross profit') && (rowStr.includes('after') || rowStr.includes('reconciliation'))) {
-        afterStart = i
-        console.log('Found AFTER section at row', i)
+      if (rowStr.includes('gross profit')) {
+        // Determine if it's before or after
+        let type = 'before'
+        if (rowStr.includes('after') || rowStr.includes('reconciliation')) {
+          type = 'after'
+        }
+        grossProfitRows.push({ row, index: i, type })
+        console.log(`Found Gross Profit row at index ${i}, type: ${type}`)
       }
     }
     
-    // Parse BEFORE section
-    if (beforeStart >= 0) {
-      result.gross_profit = { before_reconciliation: {}, after_reconciliation: {} }
+    // Process each Gross Profit section
+    for (const gpRow of grossProfitRows) {
+      const { row, index, type } = gpRow
       
-      // Find the data row (usually 1-2 rows after header)
-      for (let i = beforeStart + 1; i < Math.min(beforeStart + 5, data.length); i++) {
-        const row = data[i]
-        if (!row) continue
-        const rowStr = String(row).toLowerCase()
+      // Find the data row (look for numeric values in nearby rows)
+      let dataRow: any[] | null = null
+      
+      // Search 1-3 rows below for data
+      for (let offset = 1; offset <= 3; offset++) {
+        const checkRow = data[index + offset]
+        if (!checkRow) continue
         
-        // Skip if this is another header row
-        if (rowStr.includes('tender') || rowStr.includes('budget') || rowStr.includes('hkd')) continue
+        // Count numeric values in this row
+        let numericCount = 0
+        for (const cell of checkRow) {
+          if (isNumeric(cell)) numericCount++
+        }
         
-        const numbers = extractNumbers(row)
-        console.log('BEFORE data row', i, ':', numbers)
+        // If row has enough numeric values, it's likely the data row
+        if (numericCount >= 3) {
+          dataRow = checkRow
+          console.log(`Data row for ${type} at index ${index + offset}, ${numericCount} numeric values`)
+          break
+        }
+      }
+      
+      // Also check the row above for data (sometimes headers are below)
+      if (!dataRow) {
+        for (let offset = 1; offset <= 2; offset++) {
+          const checkRow = data[index - offset]
+          if (!checkRow) continue
+          
+          let numericCount = 0
+          for (const cell of checkRow) {
+            if (isNumeric(cell)) numericCount++
+          }
+          
+          if (numericCount >= 3) {
+            dataRow = checkRow
+            console.log(`Data row (above) for ${type} at index ${index - offset}, ${numericCount} numeric values`)
+            break
+          }
+        }
+      }
+      
+      // If we found a data row, extract the numbers
+      if (dataRow) {
+        const numbers = dataRow.filter(cell => isNumeric(cell)).map(cleanNumber)
+        console.log(`Extracted numbers for ${type}:`, numbers)
         
         if (numbers.length >= 4) {
-          result.gross_profit!.before_reconciliation!.tender = numbers[0]
-          result.gross_profit!.before_reconciliation!.first_working = numbers[1]
-          result.gross_profit!.before_reconciliation!.business_plan = numbers[2]
-          result.gross_profit!.before_reconciliation!.audit_report_wip = numbers[3]
-          result.gross_profit!.before_reconciliation!.projection = numbers[4] || 'N/A'
-          if (numbers.length >= 7) {
-            result.gross_profit!.before_reconciliation!.accrual = numbers[5]
-            result.gross_profit!.before_reconciliation!.cash_flow = numbers[6]
+          if (!result.gross_profit) result.gross_profit = { 
+            before_reconciliation: {}, 
+            after_reconciliation: {} 
+          }
+          
+          if (type === 'before') {
+            result.gross_profit.before_reconciliation = {
+              tender: numbers[0],
+              first_working: numbers[1],
+              business_plan: numbers[2],
+              audit_report_wip: numbers[3],
+              projection: numbers[4] || 'N/A',
+              accrual: numbers[5] || 'N/A',
+              cash_flow: numbers[6] || 'N/A'
+            }
+          } else {
+            result.gross_profit.after_reconciliation = {
+              tender: numbers[0],
+              first_working: numbers[1],
+              business_plan: numbers[2],
+              projection: numbers[3],
+              accrual: numbers[4] || 'N/A',
+              cash_flow: numbers[5] || 'N/A'
+            }
+          }
+        }
+      }
+    }
+    
+    // Also try to extract ALL numeric rows from the sheet
+    // This is a fallback in case the Gross Profit section isn't found
+    if (!result.gross_profit) {
+      console.log('No Gross Profit section found, searching for numeric rows...')
+      
+      for (let i = 0; i < Math.min(data.length, 50); i++) {
+        const row = data[i]
+        if (!row || row.length < 2) continue
+        
+        const rowStr = String(row).toLowerCase()
+        
+        // Look for rows that have "Gross Profit" in first column
+        const firstCell = String(row[0] || '').toLowerCase()
+        if (firstCell.includes('gross profit')) {
+          const numbers = row.filter(cell => isNumeric(cell)).map(cleanNumber)
+          console.log(`Found Gross Profit at row ${i}:`, numbers)
+          
+          if (numbers.length >= 4) {
+            result.gross_profit = { before_reconciliation: {}, after_reconciliation: {} }
+            result.gross_profit.before_reconciliation = {
+              tender: numbers[0],
+              first_working: numbers[1],
+              business_plan: numbers[2],
+              audit_report_wip: numbers[3],
+              projection: numbers[4] || 'N/A',
+              accrual: numbers[5] || 'N/A',
+              cash_flow: numbers[6] || 'N/A'
+            }
           }
           break
         }
       }
     }
     
-    // Parse AFTER section
-    if (afterStart >= 0) {
-      for (let i = afterStart + 1; i < Math.min(afterStart + 5, data.length); i++) {
-        const row = data[i]
-        if (!row) continue
-        const rowStr = String(row).toLowerCase()
-        
-        if (rowStr.includes('tender') || rowStr.includes('budget') || rowStr.includes('hkd')) continue
-        
-        const numbers = extractNumbers(row)
-        console.log('AFTER data row', i, ':', numbers)
-        
-        if (numbers.length >= 4) {
-          if (!result.gross_profit) result.gross_profit = { before_reconciliation: {}, after_reconciliation: {} }
-          result.gross_profit!.after_reconciliation!.tender = numbers[0]
-          result.gross_profit!.after_reconciliation!.first_working = numbers[1]
-          result.gross_profit!.after_reconciliation!.business_plan = numbers[2]
-          result.gross_profit!.after_reconciliation!.projection = numbers[3]
-          if (numbers.length >= 6) {
-            result.gross_profit!.after_reconciliation!.accrual = numbers[4]
-            result.gross_profit!.after_reconciliation!.cash_flow = numbers[5]
-          }
-          break
-        }
-      }
-    }
-    
-    console.log('Parsed result:', JSON.stringify(result, null, 2))
+    console.log('Final parsed result:', JSON.stringify(result, null, 2))
     return result
     
   } catch (error) {
