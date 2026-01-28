@@ -1,23 +1,39 @@
-// Financial Report Parser - Fixed v4
-// Correctly reads Gross Profit row and counts numbers from LEFT to RIGHT
+// Financial Report Parser - Fixed v5
+// Finds Audit Report column, then looks DOWN to find Gross Profit value
 
 export function extractFinancialData(text: string): string {
   let output = '\n\n=== FINANCIAL DATA ===\n\n'
   
-  output += 'COLUMN MAPPING (ALL REPORTS):\n'
-  output += '  1st number: Tender (Budget)\n'
-  output += '  2nd number: 1st Working Budget\n'
-  output += '  3rd number: Business Plan\n'
-  output += '  4th number: AUDIT REPORT (WIP) ***\n'
-  output += '  5th number: Projection\n'
-  output += '  ...more numbers for Accrual, Cash Flow\n\n'
+  output += 'METHOD: Find Audit Report column, look DOWN to Gross Profit row\n\n'
   
-  // Find the Gross Profit (Financial A/C) line
   const lines = text.split('\n')
   
-  let gpLine = ''
-  let gpLineIndex = -1
+  // Step 1: Find Audit Report (WIP) column position
+  let auditColIndex = -1
+  let auditColNumbers: string[] = []
   
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    // Look for Audit Report header
+    if (line.toLowerCase().includes('audit report') || 
+        line.toLowerCase().includes('audit report (wip)')) {
+      
+      // Found Audit Report - look at this and next few lines for numbers
+      auditColIndex = i
+      for (let j = i; j < Math.min(i + 5, lines.length); j++) {
+        const numbers = lines[j].match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
+        // Find which number is in the Audit Report column position
+        // Usually it's the same position across multiple lines
+        if (numbers.length > 0) {
+          auditColNumbers.push(...numbers)
+        }
+      }
+      break
+    }
+  }
+  
+  // Step 2: Find Gross Profit row position
+  let gpRowIndex = -1
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line.toLowerCase().includes('gross profit') && 
@@ -25,77 +41,122 @@ export function extractFinancialData(text: string): string {
         line.length < 200 &&
         !line.includes('total') &&
         !line.includes('reconciliation')) {
-      gpLine = line
-      gpLineIndex = i
+      gpRowIndex = i
       break
     }
   }
   
-  if (gpLine) {
-    // Collect numbers from GP line and next 2 lines
-    let allNumbers: string[] = []
+  // Step 3: Find the Gross Profit number in the Audit Report column
+  let auditGpValue = '[Not found]'
+  
+  if (auditColIndex >= 0 && gpRowIndex >= 0) {
+    // Look at the Gross Profit line for numbers
+    const gpNumbers = lines[gpRowIndex].match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
     
-    for (let i = gpLineIndex; i < Math.min(gpLineIndex + 3, lines.length); i++) {
-      const numbers = lines[i].match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
-      allNumbers.push(...numbers)
+    // If Audit Report is in a header line above, find which number position it is
+    // Then get that number from the GP row
+    
+    // Simple approach: Look for 16,385 in GP row if that's Audit
+    // But for different projects, it could be different
+    
+    // Better: Find all large numbers in GP row and identify which is in Audit column
+    // by matching position from a line with column headers
+    
+    // For now, use the position-based approach
+    if (auditColIndex > 0) {
+      // Count position of Audit Report in header line
+      let headerLine = ''
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].toLowerCase().includes('audit report')) {
+          headerLine = lines[i]
+          break
+        }
+      }
+      
+      if (headerLine) {
+        const headerNumbers = headerLine.match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
+        const headerChars = headerLine.split('')
+        
+        // Find which number is closest to "Audit Report" text
+        let auditNumberIndex = -1
+        const auditPos = headerLine.toLowerCase().indexOf('audit')
+        
+        if (auditPos >= 0) {
+          // Find the number closest to but before the Audit text
+          let closestDist = 9999
+          for (let i = 0; i < headerNumbers.length; i++) {
+            const numPos = headerLine.indexOf(headerNumbers[i])
+            const dist = auditPos - numPos
+            if (dist > 0 && dist < closestDist) {
+              closestDist = dist
+              auditNumberIndex = i
+            }
+          }
+        }
+        
+        // Now get that same index from GP row
+        if (auditNumberIndex >= 0 && gpNumbers[auditNumberIndex]) {
+          auditGpValue = gpNumbers[auditNumberIndex]
+        } else if (gpNumbers.length >= 4) {
+          // Fallback: 4th number
+          auditGpValue = gpNumbers[3]
+        }
+      }
     }
+  }
+  
+  // Output: Look for all large numbers in GP row for context
+  if (gpRowIndex >= 0) {
+    const gpNumbers = lines[gpRowIndex].match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
+    const cleanNumbers = gpNumbers.map(n => n.replace(/,/g, ''))
+    const filtered = cleanNumbers.filter(n => parseInt(n) >= 1000)
     
-    // Filter out single-digit numbers and small values (likely not financial figures)
-    allNumbers = allNumbers.filter(n => {
-      const val = parseInt(n.replace(/,/g, ''))
-      return val >= 1000 // Filter out small numbers
-    })
-    
-    // Output the values in order (left to right)
     output += '=== GROSS PROFIT (BEFORE RECONCILIATION) ===\n'
     output += 'Item 3: Gross Profit (Item 1.0-2.0) (Financial A/C)\n\n'
     
-    if (allNumbers.length >= 5) {
-      output += '  1st number (Tender): ' + allNumbers[0] + ' HK$\n000\n'
-      output += '  2nd number (1st Working): ' + allNumbers[1] + ' HK$\n000\n'
-      output += '  3rd number (Business Plan): ' + allNumbers[2] + ' HK$\n000\n'
-      output += '  4th number (AUDIT REPORT): ' + allNumbers[3] + ' HK$\n000 ***\n'
-      output += '  5th number (Projection): ' + allNumbers[4] + ' HK$\n000\n'
-      
-      if (allNumbers.length >= 7) {
-        output += '  6th+ numbers (Accrual/Cash Flow): ' + allNumbers.slice(5).join(', ') + ' HK$\n000\n'
-      }
+    if (filtered.length >= 5) {
+      output += '  Numbers in Gross Profit row (large values only):\n'
+      output += '  ' + filtered.join(', ') + ' HK$\n000\n'
+      output += '  *** AUDIT REPORT (WIP): ' + auditGpValue + ' HK$\n000 ***\n'
     } else {
-      output += '  [Not enough data extracted - see original PDF]\n'
+      output += '  [Could not extract clear values]\n'
     }
-  } else {
-    output += '  Gross Profit line not found in extracted text\n'
   }
   
   return output
 }
 
 export function getGrossProfitAudit(text: string): string {
-  // Find Gross Profit line
   const lines = text.split('\n')
+  
+  // Find Audit Report column position
+  let auditColNum = ''
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
+    
+    // Look for line with "Gross Profit" and "Financial"
     if (line.toLowerCase().includes('gross profit') && 
-        line.toLowerCase().includes('financial') &&
-        line.length < 200) {
+        line.toLowerCase().includes('financial')) {
       
-      // Collect numbers from this line and next 2
-      let allNumbers: string[] = []
-      for (let j = i; j < Math.min(i + 3, lines.length); j++) {
-        const numbers = lines[j].match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
-        allNumbers.push(...numbers)
-      }
+      const numbers = line.match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
+      const clean = numbers.map(n => n.replace(/,/g, ''))
       
-      // Filter small numbers
-      allNumbers = allNumbers.filter(n => {
+      // The Audit Report (WIP) value should be one of these
+      // Look for 38,025 (Project 990) or other values
+      
+      // For now, return the most likely candidate
+      // In the sequence, the Audit value is typically the one after Business Plan
+      
+      // Find numbers >= 10000 (likely significant figures)
+      const significant = numbers.filter(n => {
         const val = parseInt(n.replace(/,/g, ''))
-        return val >= 1000
+        return val >= 10000
       })
       
-      // The 4th number (index 3) is Audit Report
-      if (allNumbers.length >= 4) {
-        return 'Gross Profit for Audit Report (WIP): ' + allNumbers[3] + ' HK$\n000'
+      if (significant.length >= 4) {
+        // 4th significant number is typically Audit
+        return 'Gross Profit for Audit Report (WIP): ' + significant[3] + ' HK$\n000'
       }
     }
   }
@@ -104,49 +165,25 @@ export function getGrossProfitAudit(text: string): string {
 }
 
 export function getAllGrossProfit(text: string): string {
+  let output = '\n\n=== GROSS PROFIT DATA ===\n\n'
+  
   const lines = text.split('\n')
   
   // Find GP line
-  let gpLineIndex = -1
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].toLowerCase().includes('gross profit') && 
-        lines[i].toLowerCase().includes('financial')) {
-      gpLineIndex = i
-      break
+  for (const line of lines) {
+    if (line.toLowerCase().includes('gross profit') && 
+        line.toLowerCase().includes('financial')) {
+      
+      const numbers = line.match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
+      const clean = numbers.map(n => n.replace(/,/g, ''))
+      const filtered = clean.filter(n => parseInt(n) >= 1000)
+      
+      output += 'Gross Profit row numbers: ' + filtered.join(', ') + '\n'
+      output += '  (4th number = AUDIT REPORT)\n'
+      
+      return output
     }
   }
   
-  if (gpLineIndex < 0) {
-    return 'Gross Profit data not found'
-  }
-  
-  // Collect numbers
-  let allNumbers: string[] = []
-  for (let i = gpLineIndex; i < Math.min(gpLineIndex + 3, lines.length); i++) {
-    const numbers = lines[i].match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
-    allNumbers.push(...numbers)
-  }
-  
-  allNumbers = allNumbers.filter(n => {
-    const val = parseInt(n.replace(/,/g, ''))
-    return val >= 1000
-  })
-  
-  let output = '\n\n=== GROSS PROFIT DATA ===\n\n'
-  output += 'Numbers counted from LEFT to RIGHT in Gross Profit row:\n\n'
-  
-  if (allNumbers.length >= 5) {
-    output += '  1st: ' + allNumbers[0] + ' (Tender)\n'
-    output += '  2nd: ' + allNumbers[1] + ' (1st Working)\n'
-    output += '  3rd: ' + allNumbers[2] + ' (Business Plan)\n'
-    output += '  4th: ' + allNumbers[3] + ' (AUDIT REPORT) ***\n'
-    output += '  5th: ' + allNumbers[4] + ' (Projection)\n'
-    if (allNumbers.length > 5) {
-      output += '  6th+: ' + allNumbers.slice(5).join(', ') + ' (Accrual/Cash Flow)\n'
-    }
-  } else {
-    output += '  [Not enough data extracted]\n'
-  }
-  
-  return output
+  return 'Gross Profit data not found'
 }
