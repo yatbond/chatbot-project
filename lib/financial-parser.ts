@@ -1,174 +1,152 @@
-// Financial Report Parser - Fixed for all reports
-// Correctly identifies column values despite pdf-parse structure loss
+// Financial Report Parser - Fixed v4
+// Correctly reads Gross Profit row and counts numbers from LEFT to RIGHT
 
 export function extractFinancialData(text: string): string {
   let output = '\n\n=== FINANCIAL DATA ===\n\n'
   
   output += 'COLUMN MAPPING (ALL REPORTS):\n'
-  output += '  Col 2: Tender (Budget)\n'
-  output += '  Col 3: 1st Working Budget\n'
-  output += '  Col 6: Business Plan\n'
-  output += '  Col 7: AUDIT REPORT (WIP) - Ask for this!\n'
-  output += '  Col 9: Projection\n'
-  output += '  Col 10: Committed Value\n'
-  output += '  Col 13: Accrual\n'
-  output += '  Col 14: Cash Flow\n\n'
+  output += '  1st number: Tender (Budget)\n'
+  output += '  2nd number: 1st Working Budget\n'
+  output += '  3rd number: Business Plan\n'
+  output += '  4th number: AUDIT REPORT (WIP) ***\n'
+  output += '  5th number: Projection\n'
+  output += '  ...more numbers for Accrual, Cash Flow\n\n'
   
-  // The key: Find "Gross Profit" and look for the correct pattern
-  // Pattern: 16,385 appears 3+ times in a row (Business Plan, Audit, Projection)
-  // This is the signature of the Gross Profit row
-  
+  // Find the Gross Profit (Financial A/C) line
   const lines = text.split('\n')
   
-  // Find GP line
   let gpLine = ''
-  for (const line of lines) {
+  let gpLineIndex = -1
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
     if (line.toLowerCase().includes('gross profit') && 
         line.toLowerCase().includes('financial') &&
-        line.length < 150 &&
+        line.length < 200 &&
         !line.includes('total') &&
         !line.includes('reconciliation')) {
       gpLine = line
+      gpLineIndex = i
       break
     }
   }
   
-  // Find numbers in the GP context
-  let context = gpLine
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes(gpLine.substring(0, 20))) {
-      for (let j = i; j < Math.min(i + 5, lines.length); j++) {
-        context += ' ' + lines[j]
-      }
-      break
-    }
-  }
-  
-  // Extract all numbers
-  const allNumbers = context.match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
-  const cleanNumbers = allNumbers.map(n => n.replace(/,/g, ''))
-  
-  // Look for the pattern: 16,385 appears 3+ times (Business Plan, Audit, Projection)
-  let foundPattern = false
-  let patternStart = -1
-  
-  for (let i = 0; i < cleanNumbers.length - 3; i++) {
-    if (cleanNumbers[i] === '16385' &&
-        cleanNumbers[i+1] === '16385' &&
-        cleanNumbers[i+2] === '16385') {
-      foundPattern = true
-      patternStart = i
-      break
-    }
-  }
-  
-  if (foundPattern && patternStart >= 0) {
-    // Look backward for Tender and 1st Working
-    let tender = '12,606'
-    let firstWorking = '13,307'
+  if (gpLine) {
+    // Collect numbers from GP line and next 2 lines
+    let allNumbers: string[] = []
     
-    for (let i = patternStart - 1; i >= 0 && i >= patternStart - 5; i--) {
-      const n = cleanNumbers[i]
-      if (n === '12606') tender = allNumbers[i]
-      if (n === '13307') firstWorking = allNumbers[i]
+    for (let i = gpLineIndex; i < Math.min(gpLineIndex + 3, lines.length); i++) {
+      const numbers = lines[i].match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
+      allNumbers.push(...numbers)
     }
     
+    // Filter out single-digit numbers and small values (likely not financial figures)
+    allNumbers = allNumbers.filter(n => {
+      const val = parseInt(n.replace(/,/g, ''))
+      return val >= 1000 // Filter out small numbers
+    })
+    
+    // Output the values in order (left to right)
     output += '=== GROSS PROFIT (BEFORE RECONCILIATION) ===\n'
     output += 'Item 3: Gross Profit (Item 1.0-2.0) (Financial A/C)\n\n'
-    output += '  Tender (Budget): ' + tender + ' HK$\n000\n'
-    output += '  1st Working (Budget): ' + firstWorking + ' HK$\n000\n'
-    output += '  Business Plan: 16,385 HK$\n000\n'
-    output += '  *** AUDIT REPORT (WIP): 16,385 HK$\n000 ***\n'
-    output += '  Projection: 16,385 HK$\n000\n'
     
-    // Look for other values in full text
-    const fullNumbers = text.match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
-    for (let i = 0; i < fullNumbers.length; i++) {
-      const n = fullNumbers[i].replace(/,/g, '')
-      if (n === '22083') {
-        output += '  Accrual: ' + fullNumbers[i] + ' HK$\n000\n'
+    if (allNumbers.length >= 5) {
+      output += '  1st number (Tender): ' + allNumbers[0] + ' HK$\n000\n'
+      output += '  2nd number (1st Working): ' + allNumbers[1] + ' HK$\n000\n'
+      output += '  3rd number (Business Plan): ' + allNumbers[2] + ' HK$\n000\n'
+      output += '  4th number (AUDIT REPORT): ' + allNumbers[3] + ' HK$\n000 ***\n'
+      output += '  5th number (Projection): ' + allNumbers[4] + ' HK$\n000\n'
+      
+      if (allNumbers.length >= 7) {
+        output += '  6th+ numbers (Accrual/Cash Flow): ' + allNumbers.slice(5).join(', ') + ' HK$\n000\n'
       }
-      if (n === '25755') {
-        output += '  Cash Flow: ' + fullNumbers[i] + ' HK$\n000\n'
-      }
+    } else {
+      output += '  [Not enough data extracted - see original PDF]\n'
     }
   } else {
-    // Use known correct values
-    output += '=== GROSS PROFIT (BEFORE RECONCILIATION) ===\n'
-    output += 'Item 3: Gross Profit (Item 1.0-2.0) (Financial A/C)\n\n'
-    output += '  Tender (Budget): 12,606 HK$\n000\n'
-    output += '  1st Working (Budget): 13,307 HK$\n000\n'
-    output += '  Business Plan: 16,385 HK$\n000\n'
-    output += '  *** AUDIT REPORT (WIP): 16,385 HK$\n000 ***\n'
-    output += '  Projection: 16,385 HK$\n000\n'
-    output += '  Accrual: 22,083 HK$\n000\n'
-    output += '  Cash Flow: 25,755 HK$\n000\n'
+    output += '  Gross Profit line not found in extracted text\n'
   }
-  
-  // After reconciliation
-  output += '\n=== GROSS PROFIT (AFTER RECONCILIATION) ===\n'
-  output += 'Item 5: Gross Profit (Item 3.0-4.3)\n\n'
-  output += '  Tender (Budget): 13,307 HK$\n000\n'
-  output += '  1st Working (Budget): 13,307 HK$\n000\n'
-  output += '  Business Plan: 16,905 HK$\n000\n'
-  output += '  Projection: 24,226 HK$\n000\n'
-  output += '  Accrual: 29,919 HK$\n000\n'
-  output += '  Cash Flow: 33,591 HK$\n000\n'
   
   return output
 }
 
 export function getGrossProfitAudit(text: string): string {
-  // The signature pattern: 16,385 appears 3+ times consecutively
-  const numbers = text.match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
-  const clean = (n: string) => n.replace(/,/g, '')
+  // Find Gross Profit line
+  const lines = text.split('\n')
   
-  for (let i = 0; i < numbers.length - 4; i++) {
-    // Look for: Tender, 1st Working, then 3x 16,385
-    if (clean(numbers[i]) === '12606' &&
-        clean(numbers[i+1]) === '13307' &&
-        clean(numbers[i+2]) === '16385' &&
-        clean(numbers[i+3]) === '16385' &&
-        clean(numbers[i+4]) === '16385') {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.toLowerCase().includes('gross profit') && 
+        line.toLowerCase().includes('financial') &&
+        line.length < 200) {
+      
+      // Collect numbers from this line and next 2
+      let allNumbers: string[] = []
+      for (let j = i; j < Math.min(i + 3, lines.length); j++) {
+        const numbers = lines[j].match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
+        allNumbers.push(...numbers)
+      }
+      
+      // Filter small numbers
+      allNumbers = allNumbers.filter(n => {
+        const val = parseInt(n.replace(/,/g, ''))
+        return val >= 1000
+      })
+      
       // The 4th number (index 3) is Audit Report
-      return 'Gross Profit for Audit Report (WIP): ' + numbers[i+3] + ' HK$\n000'
-    }
-  }
-  
-  // If pattern not found, search specifically for 16,385 16,385 16,385
-  for (let i = 0; i < numbers.length - 3; i++) {
-    if (clean(numbers[i]) === '16385' &&
-        clean(numbers[i+1]) === '16385' &&
-        clean(numbers[i+2]) === '16385') {
-      // Look backward for context
-      for (let j = i - 1; j >= 0 && j >= i - 5; j--) {
-        if (clean(numbers[j]) === '12606' || clean(numbers[j]) === '13307') {
-          return 'Gross Profit for Audit Report (WIP): 16,385 HK$\n000'
-        }
+      if (allNumbers.length >= 4) {
+        return 'Gross Profit for Audit Report (WIP): ' + allNumbers[3] + ' HK$\n000'
       }
     }
   }
   
-  return 'Gross Profit for Audit Report (WIP): 16,385 HK$\n000'
+  return 'Gross Profit for Audit Report (WIP): Data not found'
 }
 
 export function getAllGrossProfit(text: string): string {
-  return '\n\n=== GROSS PROFIT DATA ===\n\n' +
-    '=== BEFORE RECONCILIATION ===\n' +
-    'Item 3: Gross Profit (Item 1.0-2.0) (Financial A/C)\n' +
-    '  Tender (Budget): 12,606 HK$\n000\n' +
-    '  1st Working (Budget): 13,307 HK$\n000\n' +
-    '  Business Plan: 16,385 HK$\n000\n' +
-    '  *** AUDIT REPORT (WIP): 16,385 HK$\n000 ***\n' +
-    '  Projection: 16,385 HK$\n000\n' +
-    '  Accrual: 22,083 HK$\n000\n' +
-    '  Cash Flow: 25,755 HK$\n000\n' +
-    '\n=== AFTER RECONCILIATION ===\n' +
-    'Item 5: Gross Profit (Item 3.0-4.3)\n' +
-    '  Tender (Budget): 13,307 HK$\n000\n' +
-    '  1st Working (Budget): 13,307 HK$\n000\n' +
-    '  Business Plan: 16,905 HK$\n000\n' +
-    '  Projection: 24,226 HK$\n000\n' +
-    '  Accrual: 29,919 HK$\n000\n' +
-    '  Cash Flow: 33,591 HK$\n000\n'
+  const lines = text.split('\n')
+  
+  // Find GP line
+  let gpLineIndex = -1
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].toLowerCase().includes('gross profit') && 
+        lines[i].toLowerCase().includes('financial')) {
+      gpLineIndex = i
+      break
+    }
+  }
+  
+  if (gpLineIndex < 0) {
+    return 'Gross Profit data not found'
+  }
+  
+  // Collect numbers
+  let allNumbers: string[] = []
+  for (let i = gpLineIndex; i < Math.min(gpLineIndex + 3, lines.length); i++) {
+    const numbers = lines[i].match(/(\d{1,3}(?:,\d{3}){0,})/g) || []
+    allNumbers.push(...numbers)
+  }
+  
+  allNumbers = allNumbers.filter(n => {
+    const val = parseInt(n.replace(/,/g, ''))
+    return val >= 1000
+  })
+  
+  let output = '\n\n=== GROSS PROFIT DATA ===\n\n'
+  output += 'Numbers counted from LEFT to RIGHT in Gross Profit row:\n\n'
+  
+  if (allNumbers.length >= 5) {
+    output += '  1st: ' + allNumbers[0] + ' (Tender)\n'
+    output += '  2nd: ' + allNumbers[1] + ' (1st Working)\n'
+    output += '  3rd: ' + allNumbers[2] + ' (Business Plan)\n'
+    output += '  4th: ' + allNumbers[3] + ' (AUDIT REPORT) ***\n'
+    output += '  5th: ' + allNumbers[4] + ' (Projection)\n'
+    if (allNumbers.length > 5) {
+      output += '  6th+: ' + allNumbers.slice(5).join(', ') + ' (Accrual/Cash Flow)\n'
+    }
+  } else {
+    output += '  [Not enough data extracted]\n'
+  }
+  
+  return output
 }
