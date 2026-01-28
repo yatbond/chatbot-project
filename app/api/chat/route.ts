@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { listKnowledgeBaseFiles, testConnection, downloadFile } from '@/lib/google-drive'
 import { getMiniMaxResponse } from '@/lib/minimax'
-import { extractTextAndTables, formatTextForAI, formatTablesForAI, formatFinancialTableForAI } from '@/lib/pdf-extractor'
-import { formatForAI, getGrossProfitAuditReport } from '@/lib/financial-data'
 
 // In-memory storage for session state (for demo - use Redis in production)
 const sessionState = new Map<string, { selectedReportIndex: number | null }>()
@@ -14,14 +12,27 @@ function getSession(sessionId: string) {
   return sessionState.get(sessionId)!
 }
 
+// Try to import pdf-parse
+let pdfParse: any = null
+try {
+  pdfParse = require('pdf-parse')
+} catch (e) {
+  console.log('pdf-parse not installed')
+}
+
+interface TableCandidate {
+  rows: string[][]
+  confidence: number
+}
+
 async function extractTextFromFile(buffer: Buffer, mimeType: string, fileName: string) {
-  if (mimeType === 'application/pdf') {
+  if (mimeType === 'application/pdf' && pdfParse) {
     try {
-      const result = await extractTextAndTables(buffer, fileName)
+      const data = await pdfParse(buffer)
       return {
-        text: formatTextForAI(result.text, result.tables),
-        tables: result.tables,
-        pageCount: result.pageCount
+        text: data.text,
+        tables: detectTables(data.text),
+        pageCount: data.numpages
       }
     } catch (error: any) {
       return { text: `[Error reading PDF: ${error.message}]`, tables: [], pageCount: 0 }
@@ -34,6 +45,53 @@ async function extractTextFromFile(buffer: Buffer, mimeType: string, fileName: s
     tables: [],
     pageCount: 1
   }
+}
+
+function detectTables(text: string): TableCandidate[] {
+  const tables: TableCandidate[] = []
+  const lines = text.split('\n')
+  let currentTable: string[][] = []
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    const hasPipe = trimmed.includes('|')
+    const hasTabs = (trimmed.match(/\t/g) || []).length >= 2
+
+    if ((hasPipe || hasTabs) && trimmed.length > 5) {
+      const cells = hasPipe 
+        ? trimmed.split('|').map(c => c.trim()).filter(Boolean)
+        : trimmed.split('\t').map(c => c.trim()).filter(Boolean)
+      
+      if (cells.length >= 2) {
+        currentTable.push(cells)
+      }
+    } else if (trimmed === '' && currentTable.length > 3) {
+      tables.push({ rows: [...currentTable], confidence: 0.7 })
+      currentTable = []
+    }
+  }
+
+  if (currentTable.length > 3) {
+    tables.push({ rows: [...currentTable], confidence: 0.7 })
+  }
+
+  return tables
+}
+
+function formatDocument(text: string, tables: TableCandidate[], fileName: string): string {
+  let tableSection = ''
+  
+  if (tables.length > 0) {
+    tableSection = `\n\n[TABLES IN ${fileName}]\n`
+    tables.forEach((table, i) => {
+      tableSection += `\n--- Table ${i + 1} ---\n`
+      table.rows.forEach(row => {
+        tableSection += `| ${row.join(' | ')} |\n`
+      })
+    })
+  }
+  
+  return `[FILE: ${fileName}]\n${text}${tableSection}`
 }
 
 export async function POST(request: NextRequest) {
@@ -55,21 +113,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ answer: `❌ Google Drive error: ${connectionTest.error}` })
     }
 
-    // Get all files and filter out non-PDF files and output folders
-    let files = await listKnowledgeBaseFiles(folderId)
+    // Get all files
+    const files = await listKnowledgeBaseFiles(folderId)
     if (!files || files.length === 0) {
       return NextResponse.json({
         answer: '✅ Connected! No documents found.',
         files: []
       })
     }
-
-    // Filter out output folders and non-PDF files
-    files = files.filter((file: any) => {
-      const name = file.name || ''
-      // Exclude folders and non-PDF files
-      return name.endsWith('.pdf') && !name.includes('_camelot_output') && !name.includes('_tabula_output')
-    })
 
     // Handle special commands
     const lowerQuestion = question.toLowerCase().trim()
@@ -107,9 +158,7 @@ export async function POST(request: NextRequest) {
 
         if (fileContent) {
           const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
-          const financialTableInfo = formatFinancialTableForAI(extracted.tables)
-          const structuredData = formatForAI() // Add pre-processed financial data
-          context = `[FILE: ${fileName}]\n${extracted.text}\n${financialTableInfo}\n${structuredData}`
+          context = formatDocument(extracted.text, extracted.tables, fileName)
         }
 
         const answer = await getMiniMaxResponse(
@@ -143,9 +192,7 @@ export async function POST(request: NextRequest) {
           const fileContent = await downloadFile(selectedFile.id, mimeType)
           if (fileContent) {
             const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
-            const financialTableInfo = formatFinancialTableForAI(extracted.tables)
-            const structuredData = formatForAI()
-            context = `[FILE: ${fileName}]\n${extracted.text}\n${financialTableInfo}\n${structuredData}`
+            context = formatDocument(extracted.text, extracted.tables, fileName)
           }
         }
       }

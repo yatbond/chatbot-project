@@ -1,12 +1,15 @@
 // PDF Text Extraction with Table Detection
-// Uses pdf-parse for reliable PDF text extraction
-// Includes table detection from extracted text
+// Uses pdf-parse for text extraction and pattern recognition for tables
 
-let pdfParse: any = null
+const fs = require('fs')
+const path = require('path')
+
+// Try to import pdf-parse, fallback to simple extraction
+let pdfParse: ((dataBuffer: Buffer) => Promise<any>) | null = null
 try {
   pdfParse = require('pdf-parse')
 } catch (e) {
-  console.log('pdf-parse not installed')
+  console.log('pdf-parse not installed, using basic extraction')
 }
 
 interface TableCandidate {
@@ -28,7 +31,6 @@ interface ExtractionResult {
 
 /**
  * Extract text and detect tables from PDF buffer
- * Uses pdf-parse for reliable extraction
  */
 export async function extractTextAndTables(pdfBuffer: Buffer, fileName: string): Promise<ExtractionResult> {
   const result: ExtractionResult = {
@@ -43,20 +45,25 @@ export async function extractTextAndTables(pdfBuffer: Buffer, fileName: string):
   }
 
   if (!pdfParse) {
-    result.text = 'pdf-parse not installed. Cannot extract PDF content.'
+    // Fallback: Basic text extraction
+    result.text = '[PDF text extraction requires pdf-parse package. Install with: npm install pdf-parse]'
     return result
   }
 
   try {
     const data = await pdfParse(pdfBuffer)
+    
     result.text = data.text
     result.pageCount = data.numpages
     
     // Detect tables from the extracted text
     result.tables = detectTables(data.text)
     
+    // Check for images (basic detection)
+    result.metadata.hasImages = detectImages(data.text)
+    
     console.log(`Extracted ${result.pageCount} pages, ${result.tables.length} tables from ${fileName}`)
-
+    
   } catch (error: any) {
     console.error('PDF extraction error:', error)
     result.text = `Error extracting PDF: ${error.message}`
@@ -67,10 +74,11 @@ export async function extractTextAndTables(pdfBuffer: Buffer, fileName: string):
 
 /**
  * Detect table-like structures in text
- * Looks for patterns that indicate tabular data
  */
 function detectTables(text: string): TableCandidate[] {
   const tables: TableCandidate[] = []
+  
+  // Split text into lines
   const lines = text.split('\n')
   
   let currentTable: string[][] = []
@@ -108,7 +116,7 @@ function detectTables(text: string): TableCandidate[] {
         tables.push({
           rows: currentTable,
           confidence: calculateTableConfidence(currentTable),
-          page: 1
+          page: 1 // Would need page tracking for accuracy
         })
       }
       currentTable = []
@@ -186,6 +194,21 @@ function calculateTableConfidence(rows: string[][]): number {
 }
 
 /**
+ * Basic image detection in PDF text
+ */
+function detectImages(text: string): boolean {
+  const imageIndicators = [
+    /image/i,
+    /figure/i,
+    /picture/i,
+    /photo/i,
+    /graphics/i
+  ]
+  
+  return imageIndicators.some(pattern => pattern.test(text))
+}
+
+/**
  * Format extracted tables for AI consumption
  */
 export function formatTablesForAI(tables: TableCandidate[]): string {
@@ -216,94 +239,4 @@ export function formatTextForAI(text: string, tables: TableCandidate[]): string 
   return `=== DOCUMENT CONTENT ===\n\n${text}${tableSection}`
 }
 
-/**
- * Special handler for Financial Status tables with merged headers
- * Creates clear column mappings for accurate LLM interpretation
- */
-export function formatFinancialTableForAI(tables: TableCandidate[]): string {
-  if (tables.length === 0) return ''
-
-  let formatted = '\n\n=== FINANCIAL STATUS TABLE ===\n\n'
-
-  // Define the column mapping for Financial Status table
-  const columnLabels = [
-    'Item Code',
-    'Description',
-    'Tender (Budget)',
-    '1st Working (Budget)',
-    'Adjustment Cost (Budget)',
-    'Revision (Budget)',
-    'Business Plan',
-    'Audit Report (WIP)',
-    'Adj Cost Variation',
-    'Projection',
-    'Committed Value',
-    'E1=% (Adj Cost)',
-    'F=Variance',
-    'Accrual',
-    'Cash Flow',
-    'G1=% (Accrual)',
-    'H=Variance'
-  ]
-
-  for (const table of tables) {
-    // Check if this looks like a financial table
-    const hasFinancialKeywords = table.rows.some(row =>
-      row.some(cell => cell && (
-        /Gross Profit/i.test(cell) ||
-        /Total Income/i.test(cell) ||
-        /Total Cost/i.test(cell) ||
-        /Acc\. Net Profit/i.test(cell) ||
-        /HK\$/.test(cell) ||
-        /Financial Status/i.test(cell)
-      ))
-    )
-
-    if (!hasFinancialKeywords) continue
-
-    formatted += 'Column Mapping:\n'
-    columnLabels.forEach((label, idx) => {
-      formatted += `  Col ${idx}: ${label}\n`
-    })
-    formatted += '\n'
-
-    formatted += 'Key Rows:\n'
-    // Extract key financial rows
-    const keyRows = table.rows.filter(row =>
-      row.some(cell => cell && (
-        /Gross Profit/i.test(cell) ||
-        /Total Income/i.test(cell) ||
-        /Total Cost/i.test(cell) ||
-        /Acc\. Net Profit/i.test(cell)
-      ))
-    )
-
-    for (const row of keyRows) {
-      // Find the description
-      const desc = row[1] || row[0] || ''
-      formatted += `\n${desc}:\n`
-
-      // Print key columns with labels
-      const keyColumns = [
-        { idx: 2, label: 'Tender' },
-        { idx: 3, label: '1st Working' },
-        { idx: 6, label: 'Business Plan' },
-        { idx: 7, label: 'Audit Report' },
-        { idx: 9, label: 'Projection' },
-        { idx: 13, label: 'Accrual' },
-        { idx: 14, label: 'Cash Flow' }
-      ]
-
-      for (const col of keyColumns) {
-        const val = row[col.idx] || ''
-        if (val) {
-          formatted += `  ${col.label}: ${val}\n`
-        }
-      }
-    }
-
-    formatted += '\n'
-  }
-
-  return formatted
-}
+export { detectTables }
