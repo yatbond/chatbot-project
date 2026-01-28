@@ -1,29 +1,23 @@
 import { google } from 'googleapis'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
-import { join } from 'path'
 
-// Load service account credentials from file
-const serviceAccountPath = join(process.cwd(), 'service-account.json')
+// Use OAuth credentials from environment variables
+const clientId = process.env.GOOGLE_CLIENT_ID
+const clientSecret = process.env.GOOGLE_CLIENT_SECRET
+const redirectUri = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/auth/callback/google'
 
-let serviceAccount = null
-if (existsSync(serviceAccountPath)) {
-  try {
-    const fs = require('fs')
-    serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'))
-  } catch (error) {
-    console.error('Error loading service account:', error)
-  }
-}
-
-// Create JWT client with service account
-const jwtClient = new google.auth.JWT(
-  serviceAccount?.client_email,
-  undefined,
-  serviceAccount?.private_key,
-  ['https://www.googleapis.com/auth/drive.readonly']
+// Create OAuth2 client
+const oauth2Client = new google.auth.OAuth2(
+  clientId,
+  clientSecret,
+  redirectUri
 )
 
-const drive = google.drive({ version: 'v3', auth: jwtClient })
+// Set credentials if access token is available (from session/auth)
+export function setAccessToken(accessToken: string) {
+  oauth2Client.setCredentials({ access_token: accessToken })
+}
+
+const drive = google.drive({ version: 'v3', auth: oauth2Client })
 
 // List files in the knowledge base folder
 export async function listKnowledgeBaseFiles(folderId: string) {
@@ -108,12 +102,18 @@ export async function getFolderInfo(folderId: string) {
 // Test connection
 export async function testConnection() {
   try {
+    if (!clientId || !clientSecret) {
+      return {
+        connected: false,
+        error: 'GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set'
+      }
+    }
     const about = await drive.about.get({
       fields: 'user'
     })
     return {
       connected: true,
-      user: about.data.user?.emailAddress || 'Service account connected'
+      user: about.data.user?.emailAddress || 'Connected with OAuth'
     }
   } catch (error: any) {
     return {
@@ -123,4 +123,4 @@ export async function testConnection() {
   }
 }
 
-export { drive, jwtClient }
+export { drive, oauth2Client, setAccessToken }
