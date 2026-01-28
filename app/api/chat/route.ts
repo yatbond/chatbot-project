@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { listKnowledgeBaseFiles, testConnection, downloadFile } from '@/lib/google-drive'
 import { getMiniMaxResponse } from '@/lib/minimax'
-import { formatFinancialData, getAllGrossProfit, getGrossProfitAudit } from '@/lib/financial-parser'
+import { extractFinancialData, getAllGrossProfit, getGrossProfitAudit } from '@/lib/financial-parser'
 
 // In-memory storage for session state (for demo - use Redis in production)
 const sessionState = new Map<string, { selectedReportIndex: number | null }>()
@@ -162,7 +162,7 @@ export async function POST(request: NextRequest) {
           context = formatDocument(extracted.text, extracted.tables, fileName)
           
           // Add structured data for all financial reports
-          const financialData = formatFinancialData(extracted.text)
+          const financialData = extractFinancialData(extracted.text)
           context += financialData
         }
 
@@ -200,7 +200,7 @@ export async function POST(request: NextRequest) {
             context = formatDocument(extracted.text, extracted.tables, fileName)
             
             // Add structured data for all financial reports
-            const financialData = formatFinancialData(extracted.text)
+            const financialData = extractFinancialData(extracted.text)
             context += financialData
           }
         }
