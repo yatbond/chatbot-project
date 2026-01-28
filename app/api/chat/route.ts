@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { listKnowledgeBaseFiles, testConnection, downloadFile } from '@/lib/google-drive'
 import { getMiniMaxResponse } from '@/lib/minimax'
 import { extractTextAndTables, formatTextForAI, formatTablesForAI, formatFinancialTableForAI } from '@/lib/pdf-extractor'
+import { formatForAI, getGrossProfitAuditReport } from '@/lib/financial-data'
 
 // In-memory storage for session state (for demo - use Redis in production)
 const sessionState = new Map<string, { selectedReportIndex: number | null }>()
@@ -100,7 +101,8 @@ export async function POST(request: NextRequest) {
         if (fileContent) {
           const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
           const financialTableInfo = formatFinancialTableForAI(extracted.tables)
-          context = `[FILE: ${fileName}]\n${extracted.text}${financialTableInfo}`
+          const structuredData = formatForAI() // Add pre-processed financial data
+          context = `[FILE: ${fileName}]\n${extracted.text}\n${financialTableInfo}\n${structuredData}`
         }
 
         const answer = await getMiniMaxResponse(
@@ -135,7 +137,8 @@ export async function POST(request: NextRequest) {
           if (fileContent) {
             const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
             const financialTableInfo = formatFinancialTableForAI(extracted.tables)
-            context = `[FILE: ${fileName}]\n${extracted.text}${financialTableInfo}`
+            const structuredData = formatForAI()
+            context = `[FILE: ${fileName}]\n${extracted.text}\n${financialTableInfo}\n${structuredData}`
           }
         }
       }
