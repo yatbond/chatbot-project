@@ -26,6 +26,30 @@ interface TableCandidate {
   confidence: number
 }
 
+interface JsonData {
+  project?: string
+  report_date?: string
+  gross_profit?: {
+    before_reconciliation?: {
+      tender?: string
+      first_working?: string
+      business_plan?: string
+      audit_report_wip?: string
+      projection?: string
+      accrual?: string
+      cash_flow?: string
+    }
+    after_reconciliation?: {
+      tender?: string
+      first_working?: string
+      business_plan?: string
+      projection?: string
+      accrual?: string
+      cash_flow?: string
+    }
+  }
+}
+
 async function extractTextFromFile(buffer: Buffer, mimeType: string, fileName: string) {
   if (mimeType === 'application/pdf' && pdfParse) {
     try {
@@ -95,6 +119,52 @@ function formatDocument(text: string, tables: TableCandidate[], fileName: string
   return `[FILE: ${fileName}]\n${text}${tableSection}`
 }
 
+function formatJsonData(jsonData: JsonData, fileName: string): string {
+  let output = `\n\n=== EXTRACTED DATA FROM ${fileName} ===\n`
+  output += `Source: Pre-processed JSON file\n\n`
+  
+  if (jsonData.project) {
+    output += `Project: ${jsonData.project}\n`
+  }
+  if (jsonData.report_date) {
+    output += `Report Date: ${jsonData.report_date}\n`
+  }
+  
+  const gp = jsonData.gross_profit
+  if (gp?.before_reconciliation) {
+    const b = gp.before_reconciliation
+    output += `\n=== GROSS PROFIT (BEFORE RECONCILIATION) ===\n`
+    output += `  Tender (Budget): ${b.tender || 'N/A'} HK$\n`
+    output += `  1st Working Budget: ${b.first_working || 'N/A'} HK$\n`
+    output += `  Business Plan: ${b.business_plan || 'N/A'} HK$\n`
+    output += `  *** AUDIT REPORT (WIP): ${b.audit_report_wip || 'N/A'} HK$ ***\n`
+    output += `  Projection: ${b.projection || 'N/A'} HK$\n`
+    output += `  Accrual: ${b.accrual || 'N/A'} HK$\n`
+    output += `  Cash Flow: ${b.cash_flow || 'N/A'} HK$\n`
+  }
+  
+  if (gp?.after_reconciliation) {
+    const a = gp.after_reconciliation
+    output += `\n=== GROSS PROFIT (AFTER RECONCILIATION) ===\n`
+    output += `  Tender (Budget): ${a.tender || 'N/A'} HK$\n`
+    output += `  1st Working Budget: ${a.first_working || 'N/A'} HK$\n`
+    output += `  Business Plan: ${a.business_plan || 'N/A'} HK$\n`
+    output += `  Projection: ${a.projection || 'N/A'} HK$\n`
+    output += `  Accrual: ${a.accrual || 'N/A'} HK$\n`
+    output += `  Cash Flow: ${a.cash_flow || 'N/A'} HK$\n`
+  }
+  
+  return output
+}
+
+function isJsonFile(fileName: string): boolean {
+  return fileName.toLowerCase().endsWith('_data.json')
+}
+
+function getCorrespondingJsonName(pdfName: string): string {
+  return pdfName.replace('.pdf', '_data.json')
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { question, sessionId, selectedReportIndex } = await request.json()
@@ -123,20 +193,32 @@ export async function POST(request: NextRequest) {
       })
     }
 
+    // Separate JSON files from PDFs
+    const jsonFiles = files.filter((f: any) => isJsonFile(f.name))
+    const pdfFiles = files.filter((f: any) => !isJsonFile(f.name))
+
+    // Create a map of JSON files for quick lookup
+    const jsonMap = new Map<string, any>()
+    jsonFiles.forEach((f: any) => {
+      jsonMap.set(f.name.toLowerCase(), f)
+    })
+
     // Handle special commands
     const lowerQuestion = question.toLowerCase().trim()
     
     // === LIST REPORTS COMMAND ===
     if (lowerQuestion === 'hi' || lowerQuestion === 'hello' || lowerQuestion === 'list' || lowerQuestion === 'list reports' || lowerQuestion === 'show reports') {
-      const reportList = files.map((file: any, index: number) => {
+      // Show both PDFs and JSON files
+      const allDisplayFiles = [...pdfFiles, ...jsonFiles]
+      const reportList = allDisplayFiles.map((file: any, index: number) => {
         const icon = file.mimeType?.includes('pdf') ? '📄' : '📁'
         const date = file.modifiedTime ? new Date(file.modifiedTime).toLocaleDateString() : ''
         return `${index + 1}. ${icon} **${file.name}** ${date}`
       }).join('\n')
 
       return NextResponse.json({
-        answer: `👋 **Hello! Here are your financial reports:**\n\n${reportList}\n\n📝 **Enter the number (1-${files.length})** of the report you want to analyze.`,
-        files: files.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
+        answer: `👋 **Hello! Here are your financial reports:**\n\n${reportList}\n\n📝 **Enter the number (1-${allDisplayFiles.length})** of the report you want to analyze.`,
+        files: allDisplayFiles.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
         selectedReportIndex: null,
         showList: true
       })
@@ -144,40 +226,109 @@ export async function POST(request: NextRequest) {
 
     // === SELECT REPORT COMMAND ===
     if (selectedReportIndex !== undefined && selectedReportIndex !== null) {
+      const allFiles = [...pdfFiles, ...jsonFiles]
       const index = selectedReportIndex - 1
-      if (index >= 0 && index < files.length) {
-        const file = files[index]
-        
-        // Download and process only this file
-        const mimeType = file.mimeType || 'application/octet-stream'
-        if (!file.id) {
-          return NextResponse.json({ error: 'File ID is missing' }, { status: 400 })
-        }
-        const fileContent = await downloadFile(file.id, mimeType)
+      
+      if (index >= 0 && index < allFiles.length) {
+        const file = allFiles[index]
         const fileName = file.name || 'unknown'
-        let context = ''
-
-        if (fileContent) {
-          const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
-          context = formatDocument(extracted.text, extracted.tables, fileName)
+        
+        // Check if this is a JSON file
+        if (isJsonFile(fileName)) {
+          // Use pre-processed JSON data
+          if (!file.id) {
+            return NextResponse.json({ error: 'File ID is missing' }, { status: 400 })
+          }
+          const fileContent = await downloadFile(file.id, 'application/json')
+          let context = ''
           
-          // Add structured data for all financial reports
-          const financialData = extractFinancialData(extracted.text)
-          context += financialData
+          if (fileContent) {
+            try {
+              const jsonData = JSON.parse(fileContent.toString())
+              context = formatJsonData(jsonData, fileName)
+            } catch (e) {
+              context = `[Error parsing JSON: ${e}]`
+            }
+          }
+
+          const answer = await getMiniMaxResponse(
+            `Focus ONLY on this report (${fileName}). ${question}`,
+            context
+          )
+
+          return NextResponse.json({
+            answer,
+            files: allFiles.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
+            selectedReportIndex: selectedReportIndex,
+            selectedFileName: fileName,
+            showList: false
+          })
+        } else {
+          // This is a PDF - check if JSON version exists
+          const jsonName = getCorrespondingJsonName(fileName)
+          const jsonFile = jsonMap.get(jsonName.toLowerCase())
+          
+          if (jsonFile) {
+            // Use JSON version instead
+            if (!jsonFile.id) {
+              return NextResponse.json({ error: 'JSON File ID is missing' }, { status: 400 })
+            }
+            const fileContent = await downloadFile(jsonFile.id, 'application/json')
+            let context = ''
+            
+            if (fileContent) {
+              try {
+                const jsonData = JSON.parse(fileContent.toString())
+                context = formatJsonData(jsonData, jsonFile.name)
+              } catch (e) {
+                context = `[Error parsing JSON: ${e}]`
+              }
+            }
+
+            const answer = await getMiniMaxResponse(
+              `Focus ONLY on this report (${fileName}). ${question}`,
+              context
+            )
+
+            return NextResponse.json({
+              answer,
+              files: allFiles.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
+              selectedReportIndex: selectedReportIndex,
+              selectedFileName: fileName,
+              showList: false
+            })
+          } else {
+            // No JSON version - fall back to PDF parsing
+            if (!file.id) {
+              return NextResponse.json({ error: 'File ID is missing' }, { status: 400 })
+            }
+            const mimeType = file.mimeType || 'application/octet-stream'
+            const fileContent = await downloadFile(file.id, mimeType)
+            let context = ''
+
+            if (fileContent) {
+              const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
+              context = formatDocument(extracted.text, extracted.tables, fileName)
+              
+              // Add structured data for all financial reports
+              const financialData = extractFinancialData(extracted.text)
+              context += financialData
+            }
+
+            const answer = await getMiniMaxResponse(
+              `Focus ONLY on this report (${fileName}). ${question}`,
+              context
+            )
+
+            return NextResponse.json({
+              answer,
+              files: allFiles.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
+              selectedReportIndex: selectedReportIndex,
+              selectedFileName: fileName,
+              showList: false
+            })
+          }
         }
-
-        const answer = await getMiniMaxResponse(
-          `Focus ONLY on this report (${fileName}). ${question}`,
-          context
-        )
-
-        return NextResponse.json({
-          answer,
-          files: files.map((f: any, i: number) => ({ id: f.id, name: f.name, index: i + 1 })),
-          selectedReportIndex: selectedReportIndex,
-          selectedFileName: fileName,
-          showList: false
-        })
       }
     }
 
@@ -186,22 +337,51 @@ export async function POST(request: NextRequest) {
     let selectedFile = null
 
     if (selectedReportIndex !== null && selectedReportIndex !== undefined) {
+      const allFiles = [...pdfFiles, ...jsonFiles]
       const index = selectedReportIndex - 1
-      if (index >= 0 && index < files.length) {
-        selectedFile = files[index]
-        if (!selectedFile.id) {
-          console.error('Selected file is missing ID')
+      
+      if (index >= 0 && index < allFiles.length) {
+        selectedFile = allFiles[index]
+        const fileName = selectedFile.name || 'unknown'
+        
+        if (isJsonFile(fileName)) {
+          // Use JSON
+          if (selectedFile.id) {
+            const fileContent = await downloadFile(selectedFile.id, 'application/json')
+            if (fileContent) {
+              try {
+                const jsonData = JSON.parse(fileContent.toString())
+                context = formatJsonData(jsonData, fileName)
+              } catch (e) {
+                context = `[Error parsing JSON: ${e}]`
+              }
+            }
+          }
         } else {
-          const mimeType = selectedFile.mimeType || 'application/octet-stream'
-          const fileName = selectedFile.name || 'unknown'
-          const fileContent = await downloadFile(selectedFile.id, mimeType)
-          if (fileContent) {
-            const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
-            context = formatDocument(extracted.text, extracted.tables, fileName)
-            
-            // Add structured data for all financial reports
-            const financialData = extractFinancialData(extracted.text)
-            context += financialData
+          // PDF - check for JSON version
+          const jsonName = getCorrespondingJsonName(fileName)
+          const jsonFile = jsonMap.get(jsonName.toLowerCase())
+          
+          if (jsonFile?.id) {
+            const fileContent = await downloadFile(jsonFile.id, 'application/json')
+            if (fileContent) {
+              try {
+                const jsonData = JSON.parse(fileContent.toString())
+                context = formatJsonData(jsonData, jsonFile.name)
+              } catch (e) {
+                context = `[Error parsing JSON: ${e}]`
+              }
+            }
+          } else if (selectedFile.id) {
+            // Fall back to PDF
+            const mimeType = selectedFile.mimeType || 'application/octet-stream'
+            const fileContent = await downloadFile(selectedFile.id, mimeType)
+            if (fileContent) {
+              const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
+              context = formatDocument(extracted.text, extracted.tables, fileName)
+              const financialData = extractFinancialData(extracted.text)
+              context += financialData
+            }
           }
         }
       }
@@ -241,10 +421,14 @@ export async function GET() {
   const connectionTest = await testConnection()
 
   return NextResponse.json({
-    status: 'Chatbot v2 - Financial Report Analyzer',
+    status: 'Chatbot v3 - Financial Report Analyzer with JSON Pre-processing',
     connection: connectionTest,
     knowledgeBase: {
       folderId: folderId || 'not configured'
-    }
+    },
+    features: [
+      'Pre-processed JSON files for accurate data extraction',
+      'Falls back to PDF parsing if JSON not available'
+    ]
   })
 }
