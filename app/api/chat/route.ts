@@ -55,14 +55,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ answer: `❌ Google Drive error: ${connectionTest.error}` })
     }
 
-    // Get all files
-    const files = await listKnowledgeBaseFiles(folderId)
+    // Get all files and filter out non-PDF files and output folders
+    let files = await listKnowledgeBaseFiles(folderId)
     if (!files || files.length === 0) {
       return NextResponse.json({
         answer: '✅ Connected! No documents found.',
         files: []
       })
     }
+
+    // Filter out output folders and non-PDF files
+    files = files.filter((file: any) => {
+      const name = file.name || ''
+      // Exclude folders and non-PDF files
+      return name.endsWith('.pdf') && !name.includes('_camelot_output') && !name.includes('_tabula_output')
+    })
 
     // Handle special commands
     const lowerQuestion = question.toLowerCase().trim()
