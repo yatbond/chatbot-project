@@ -55,8 +55,8 @@ function parseFileName(fileName: string): { projectNo: string; projectName: stri
   // Remove _data.json suffix if present
   let name = fileName.replace('_data.json', '').replace('.pdf', '')
   
-  // Extract project number (at the beginning - digits followed by space or dash)
-  const match = name.match(/^(\d+)\s*[-–]\s*/)
+  // Extract project number (at the beginning - digits followed by space, dash, or immediately by letters)
+  const match = name.match(/^(\d+)\s*[-–]?\s*/)
   let projectNo = ''
   let projectName = name
   
@@ -72,8 +72,12 @@ function parseFileName(fileName: string): { projectNo: string; projectName: stri
     }
   }
   
-  // Clean up project name
-  projectName = projectName.replace(/\s+Financial\s*Report.*/i, '').trim()
+  // Clean up project name - remove "Financial Report" and date
+  projectName = projectName
+    .replace(/\s+Financial\s*Report.*/i, '')
+    .replace(/\s+Finanical\s*Report.*/i, '')  // Note the typo in some filenames
+    .replace(/^\d{4}-\d{2}.*/i, '')  // Remove date suffix
+    .trim()
   
   return {
     projectNo: projectNo || 'Unknown',
