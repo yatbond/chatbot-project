@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { listKnowledgeBaseFiles, testConnection, downloadFile } from '@/lib/google-drive'
 import { getMiniMaxResponse } from '@/lib/minimax'
-import { extractFinancialData, getAllGrossProfit, getGrossProfitAudit } from '@/lib/financial-parser'
+import { extractFinancialData } from '@/lib/financial-parser'
+import { parseExcelFinancialData, formatExcelData } from '@/lib/excel-parser'
 
-// In-memory storage for session state (for demo - use Redis in production)
 const sessionState = new Map<string, { selectedReportIndex: number | null }>()
 
 function getSession(sessionId: string) {
@@ -13,7 +13,6 @@ function getSession(sessionId: string) {
   return sessionState.get(sessionId)!
 }
 
-// Try to import pdf-parse
 let pdfParse: any = null
 try {
   pdfParse = require('pdf-parse')
@@ -28,7 +27,6 @@ interface TableCandidate {
 
 interface JsonData {
   project?: string
-  report_date?: string
   gross_profit?: {
     before_reconciliation?: {
       tender?: string
@@ -50,12 +48,17 @@ interface JsonData {
   }
 }
 
-// Parse filename to extract project number and name
-function parseFileName(fileName: string): { projectNo: string; projectName: string; hasJson: boolean } {
-  // Remove _data.json suffix if present
-  let name = fileName.replace('_data.json', '').replace('.pdf', '')
+function isExcelFile(fileName: string): boolean {
+  return fileName.toLowerCase().endsWith('.xlsx') || fileName.toLowerCase().endsWith('.xls')
+}
+
+function isJsonFile(fileName: string): boolean {
+  return fileName.toLowerCase().endsWith('_data.json')
+}
+
+function parseFileName(fileName: string): { projectNo: string; projectName: string } {
+  let name = fileName.replace('_data.json', '').replace('.pdf', '').replace('.xlsx', '').replace('.xls', '')
   
-  // Extract project number (at the beginning - digits followed by space, dash, or immediately by letters)
   const match = name.match(/^(\d+)\s*[-–]?\s*/)
   let projectNo = ''
   let projectName = name
@@ -64,7 +67,6 @@ function parseFileName(fileName: string): { projectNo: string; projectName: stri
     projectNo = match[1]
     projectName = name.substring(match[0].length).trim()
   } else {
-    // Try to get first word as project number
     const firstWord = name.split(/[\s-–]/)[0]
     if (firstWord && /^\d+$/.test(firstWord)) {
       projectNo = firstWord
@@ -72,17 +74,15 @@ function parseFileName(fileName: string): { projectNo: string; projectName: stri
     }
   }
   
-  // Clean up project name - remove "Financial Report" and date
   projectName = projectName
     .replace(/\s+Financial\s*Report.*/i, '')
-    .replace(/\s+Finanical\s*Report.*/i, '')  // Note the typo in some filenames
-    .replace(/^\d{4}-\d{2}.*/i, '')  // Remove date suffix
+    .replace(/\s+Finanical\s*Report.*/i, '')
+    .replace(/^\d{4}-\d{2}.*/i, '')
     .trim()
   
   return {
     projectNo: projectNo || 'Unknown',
-    projectName: projectName || name,
-    hasJson: fileName.endsWith('_data.json')
+    projectName: projectName || name
   }
 }
 
@@ -90,21 +90,12 @@ async function extractTextFromFile(buffer: Buffer, mimeType: string, fileName: s
   if (mimeType === 'application/pdf' && pdfParse) {
     try {
       const data = await pdfParse(buffer)
-      return {
-        text: data.text,
-        tables: detectTables(data.text),
-        pageCount: data.numpages
-      }
+      return { text: data.text, tables: detectTables(data.text), pageCount: data.numpages }
     } catch (error: any) {
       return { text: `[Error reading PDF: ${error.message}]`, tables: [], pageCount: 0 }
     }
   }
-  
-  return {
-    text: `[File: ${fileName}]`,
-    tables: [],
-    pageCount: 1
-  }
+  return { text: `[File: ${fileName}]`, tables: [], pageCount: 1 }
 }
 
 function detectTables(text: string): TableCandidate[] {
@@ -121,26 +112,20 @@ function detectTables(text: string): TableCandidate[] {
       const cells = hasPipe 
         ? trimmed.split('|').map(c => c.trim()).filter(Boolean)
         : trimmed.split('\t').map(c => c.trim()).filter(Boolean)
-      
-      if (cells.length >= 2) {
-        currentTable.push(cells)
-      }
+      if (cells.length >= 2) currentTable.push(cells)
     } else if (trimmed === '' && currentTable.length > 3) {
       tables.push({ rows: [...currentTable], confidence: 0.7 })
       currentTable = []
     }
   }
-
   if (currentTable.length > 3) {
     tables.push({ rows: [...currentTable], confidence: 0.7 })
   }
-
   return tables
 }
 
 function formatDocument(text: string, tables: TableCandidate[], fileName: string): string {
   let tableSection = ''
-  
   if (tables.length > 0) {
     tableSection = `\n\n[TABLES IN ${fileName}]\n`
     tables.forEach((table, i) => {
@@ -150,20 +135,11 @@ function formatDocument(text: string, tables: TableCandidate[], fileName: string
       })
     })
   }
-  
   return `[FILE: ${fileName}]\n${text}${tableSection}`
 }
 
 function formatJsonData(jsonData: JsonData, fileName: string): string {
-  let output = `\n\n=== EXTRACTED DATA FROM ${fileName} ===\n`
-  output += `Source: Pre-processed JSON file\n\n`
-  
-  if (jsonData.project) {
-    output += `Project: ${jsonData.project}\n`
-  }
-  if (jsonData.report_date) {
-    output += `Report Date: ${jsonData.report_date}\n`
-  }
+  let output = `\n\n=== EXTRACTED DATA FROM ${fileName} ===\nSource: Pre-processed JSON file\n\n`
   
   const gp = jsonData.gross_profit
   if (gp?.before_reconciliation) {
@@ -192,17 +168,9 @@ function formatJsonData(jsonData: JsonData, fileName: string): string {
   return output
 }
 
-function isJsonFile(fileName: string): boolean {
-  return fileName.toLowerCase().endsWith('_data.json')
-}
-
-function getCorrespondingJsonName(pdfName: string): string {
-  return pdfName.replace('.pdf', '_data.json')
-}
-
 export async function POST(request: NextRequest) {
   try {
-    const { question, sessionId, selectedReportIndex } = await request.json()
+    const { question, selectedReportIndex } = await request.json()
 
     if (!question || question.trim().length === 0) {
       return NextResponse.json({ error: 'Question is required' }, { status: 400 })
@@ -213,131 +181,139 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ answer: 'Please configure Google Drive folder ID.' })
     }
 
-    // Test connection
     const connectionTest = await testConnection()
     if (!connectionTest.connected) {
       return NextResponse.json({ answer: `❌ Google Drive error: ${connectionTest.error}` })
     }
 
-    // Get all files
     const files = await listKnowledgeBaseFiles(folderId)
     if (!files || files.length === 0) {
-      return NextResponse.json({
-        answer: '✅ Connected! No documents found.',
-        files: []
-      })
+      return NextResponse.json({ answer: '✅ Connected! No documents found.', files: [] })
     }
 
-    // Separate JSON files from PDFs
     const jsonFiles = files.filter((f: any) => isJsonFile(f.name))
-    const pdfFiles = files.filter((f: any) => !isJsonFile(f.name))
+    const excelFiles = files.filter((f: any) => isExcelFile(f.name))
+    const pdfFiles = files.filter((f: any) => !isJsonFile(f.name) && !isExcelFile(f.name))
 
-    // Create a map of JSON files for quick lookup (key = base name lowercase)
-    const jsonMap = new Map<string, any>()
-    jsonFiles.forEach((f: any) => {
-      const baseName = f.name.replace('_data.json', '').toLowerCase()
-      jsonMap.set(baseName, f)
-    })
-
-    // Group files by project (merge PDF + JSON into single entry)
     const projectMap = new Map<string, any>()
     
-    // Process PDFs
     pdfFiles.forEach((f: any) => {
       const parsed = parseFileName(f.name)
       const key = `${parsed.projectNo}-${parsed.projectName}`.toLowerCase()
       projectMap.set(key, {
-        pdfFile: f,
-        jsonFile: null,
-        hasJson: false,
-        projectNo: parsed.projectNo,
-        projectName: parsed.projectName,
-        displayName: `${parsed.projectNo} - ${parsed.projectName}`
+        pdfFile: f, excelFile: null, jsonFile: null,
+        hasJson: false, hasExcel: false,
+        projectNo: parsed.projectNo, projectName: parsed.projectName
       })
     })
     
-    // Process JSONs and merge with PDFs
+    excelFiles.forEach((f: any) => {
+      const parsed = parseFileName(f.name)
+      const key = `${parsed.projectNo}-${parsed.projectName}`.toLowerCase()
+      if (projectMap.has(key)) {
+        const existing = projectMap.get(key)
+        existing.excelFile = f
+        existing.hasExcel = true
+      } else {
+        projectMap.set(key, {
+          pdfFile: null, excelFile: f, jsonFile: null,
+          hasJson: false, hasExcel: true,
+          projectNo: parsed.projectNo, projectName: parsed.projectName
+        })
+      }
+    })
+    
     jsonFiles.forEach((f: any) => {
       const parsed = parseFileName(f.name)
       const key = `${parsed.projectNo}-${parsed.projectName}`.toLowerCase()
-      
       if (projectMap.has(key)) {
-        // JSON exists, update to use JSON
         const existing = projectMap.get(key)
         existing.jsonFile = f
         existing.hasJson = true
       } else {
-        // JSON only (no PDF)
         projectMap.set(key, {
-          pdfFile: null,
-          jsonFile: f,
-          hasJson: true,
-          projectNo: parsed.projectNo,
-          projectName: parsed.projectName,
-          displayName: `${parsed.projectNo} - ${parsed.projectName}`
+          pdfFile: null, excelFile: null, jsonFile: f,
+          hasJson: true, hasExcel: false,
+          projectNo: parsed.projectNo, projectName: parsed.projectName
         })
       }
     })
 
-    // Convert to array and sort
     const projects = Array.from(projectMap.values())
       .sort((a, b) => a.projectNo.localeCompare(b.projectNo, undefined, { numeric: true }))
 
-    // Handle special commands
     const lowerQuestion = question.toLowerCase().trim()
     
-    // === LIST REPORTS COMMAND ===
-    if (lowerQuestion === 'hi' || lowerQuestion === 'hello' || lowerQuestion === 'list' || lowerQuestion === 'list reports' || lowerQuestion === 'show reports') {
+    if (lowerQuestion === 'hi' || lowerQuestion === 'hello' || lowerQuestion === 'list') {
       const reportList = projects.map((project: any, index: number) => {
-        const icon = project.hasJson ? '✅' : '📄'
+        let icon = '📄'
+        if (project.hasExcel) icon = '📊'
+        else if (project.hasJson) icon = '✅'
         return `${index + 1}. ${icon} **${project.projectNo} - ${project.projectName}**`
       }).join('\n')
 
       return NextResponse.json({
         answer: `👋 **Hello! Here are your financial reports:**\n\n${reportList}\n\n📝 **Enter the number (1-${projects.length})** of the project you want to analyze.`,
         files: projects.map((p: any, i: number) => ({ 
-          id: p.hasJson ? p.jsonFile.id : p.pdfFile.id, 
-          projectNo: p.projectNo,
-          projectName: p.projectName,
-          hasJson: p.hasJson,
-          index: i + 1 
+          id: p.hasExcel ? p.excelFile.id : (p.hasJson ? p.jsonFile.id : p.pdfFile.id), 
+          projectNo: p.projectNo, projectName: p.projectName,
+          hasJson: p.hasJson, hasExcel: p.hasExcel, index: i + 1 
         })),
-        selectedReportIndex: null,
-        showList: true
+        selectedReportIndex: null, showList: true
       })
     }
 
-    // === SELECT REPORT COMMAND ===
     if (selectedReportIndex !== undefined && selectedReportIndex !== null) {
       let project = null
       
-      // Handle both string and number inputs
       const inputValue = typeof selectedReportIndex === 'string' 
         ? parseInt(selectedReportIndex, 10) 
         : selectedReportIndex
       
-      // Check if it's a list number (1-21)
       const listIndex = inputValue - 1
       if (listIndex >= 0 && listIndex < projects.length) {
         project = projects[listIndex]
       } else {
-        // Check if it matches a project number (e.g., "990" matches project 990)
         const inputNum = String(inputValue)
         project = projects.find(p => p.projectNo === inputNum)
       }
       
       if (project) {
-        const fileName = project.hasJson ? project.jsonFile.name : project.pdfFile.name
-        const fileId = project.hasJson ? project.jsonFile.id : project.pdfFile.id
-        const mimeType = project.hasJson ? 'application/json' : (project.pdfFile.mimeType || 'application/octet-stream')
+        let fileId: string | null = null
+        let mimeType = 'application/octet-stream'
+        let fileName = ''
+        let dataType = ''
         
-        // Download and process
+        if (project.hasExcel) {
+          fileId = project.excelFile.id
+          mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          fileName = project.excelFile.name
+          dataType = 'excel'
+        } else if (project.hasJson) {
+          fileId = project.jsonFile.id
+          mimeType = 'application/json'
+          fileName = project.jsonFile.name
+          dataType = 'json'
+        } else if (project.pdfFile) {
+          fileId = project.pdfFile.id
+          mimeType = project.pdfFile.mimeType || 'application/pdf'
+          fileName = project.pdfFile.name
+          dataType = 'pdf'
+        }
+        
+        if (!fileId) {
+          return NextResponse.json({ answer: 'Error: No file found for this project.' })
+        }
+        
         const fileContent = await downloadFile(fileId, mimeType)
         let context = ''
 
         if (fileContent) {
-          if (project.hasJson) {
-            // Use pre-processed JSON data
+          if (dataType === 'excel') {
+            const excelData = parseExcelFinancialData(fileContent)
+            if (excelData) context = formatExcelData(excelData, fileName)
+            else context = `[Error parsing Excel file: ${fileName}]`
+          } else if (dataType === 'json') {
             try {
               const jsonData = JSON.parse(fileContent.toString())
               context = formatJsonData(jsonData, fileName)
@@ -345,11 +321,9 @@ export async function POST(request: NextRequest) {
               context = `[Error parsing JSON: ${e}]`
             }
           } else {
-            // Fall back to PDF parsing
             const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
             context = formatDocument(extracted.text, extracted.tables, fileName)
-            const financialData = extractFinancialData(extracted.text)
-            context += financialData
+            context += extractFinancialData(extracted.text)
           }
         }
 
@@ -361,11 +335,9 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           answer,
           files: projects.map((p: any, i: number) => ({ 
-            id: p.hasJson ? p.jsonFile.id : p.pdfFile.id, 
-            projectNo: p.projectNo,
-            projectName: p.projectName,
-            hasJson: p.hasJson,
-            index: i + 1 
+            id: p.hasExcel ? p.excelFile.id : (p.hasJson ? p.jsonFile.id : p.pdfFile.id), 
+            projectNo: p.projectNo, projectName: p.projectName,
+            hasJson: p.hasJson, hasExcel: p.hasExcel, index: i + 1 
           })),
           selectedReportIndex: selectedReportIndex,
           selectedFileName: `${project.projectNo} - ${project.projectName}`,
@@ -374,55 +346,73 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // === DEFAULT: Ask about currently selected report or all projects ===
     let context = ''
     let selectedProject = null
 
     if (selectedReportIndex !== null && selectedReportIndex !== undefined) {
-      // Handle both string and number inputs
       const inputValue = typeof selectedReportIndex === 'string' 
         ? parseInt(selectedReportIndex, 10) 
         : selectedReportIndex
       
-      // Check if it's a list number (1-21)
       const listIndex = inputValue - 1
       if (listIndex >= 0 && listIndex < projects.length) {
         selectedProject = projects[listIndex]
       } else {
-        // Check if it matches a project number (e.g., "990" matches project 990)
         const inputNum = String(inputValue)
         selectedProject = projects.find(p => p.projectNo === inputNum)
       }
       
       if (selectedProject) {
-        const fileId = selectedProject.hasJson ? selectedProject.jsonFile.id : selectedProject.pdfFile.id
-        const mimeType = selectedProject.hasJson ? 'application/json' : (selectedProject.pdfFile.mimeType || 'application/octet-stream')
-        const fileName = selectedProject.hasJson ? selectedProject.jsonFile.name : selectedProject.pdfFile.name
+        let fileId: string | null = null
+        let mimeType = 'application/octet-stream'
+        let fileName = ''
+        let dataType = ''
         
-        const fileContent = await downloadFile(fileId, mimeType)
-        if (fileContent) {
-          if (selectedProject.hasJson) {
-            try {
-              const jsonData = JSON.parse(fileContent.toString())
-              context = formatJsonData(jsonData, fileName)
-            } catch (e) {
-              context = `[Error parsing JSON: ${e}]`
+        if (selectedProject.hasExcel) {
+          fileId = selectedProject.excelFile.id
+          mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          fileName = selectedProject.excelFile.name
+          dataType = 'excel'
+        } else if (selectedProject.hasJson) {
+          fileId = selectedProject.jsonFile.id
+          mimeType = 'application/json'
+          fileName = selectedProject.jsonFile.name
+          dataType = 'json'
+        } else if (selectedProject.pdfFile) {
+          fileId = selectedProject.pdfFile.id
+          mimeType = selectedProject.pdfFile.mimeType || 'application/pdf'
+          fileName = selectedProject.pdfFile.name
+          dataType = 'pdf'
+        }
+        
+        if (fileId) {
+          const fileContent = await downloadFile(fileId, mimeType)
+          if (fileContent) {
+            if (dataType === 'excel') {
+              const excelData = parseExcelFinancialData(fileContent)
+              if (excelData) context = formatExcelData(excelData, fileName)
+            } else if (dataType === 'json') {
+              try {
+                const jsonData = JSON.parse(fileContent.toString())
+                context = formatJsonData(jsonData, fileName)
+              } catch (e) {}
+            } else {
+              const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
+              context = formatDocument(extracted.text, extracted.tables, fileName)
+              context += extractFinancialData(extracted.text)
             }
-          } else {
-            const extracted = await extractTextFromFile(fileContent, mimeType, fileName)
-            context = formatDocument(extracted.text, extracted.tables, fileName)
-            const financialData = extractFinancialData(extracted.text)
-            context += financialData
           }
         }
       }
     }
 
-    // If no project selected, list all
     if (!context) {
-      const projectList = projects.map((p: any) => 
-        `**${p.projectNo} - ${p.projectName}**${p.hasJson ? ' (accurate data available)' : ''}`
-      ).join('\n')
+      const projectList = projects.map((p: any) => {
+        let icon = '📄'
+        if (p.hasExcel) icon = '📊'
+        else if (p.hasJson) icon = '✅'
+        return `**${p.projectNo} - ${p.projectName}**${p.hasJson ? ' (accurate)' : ''}`
+      }).join('\n')
       context = `Available projects:\n${projectList}`
     }
 
@@ -436,11 +426,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       answer,
       files: projects.map((p: any, i: number) => ({ 
-        id: p.hasJson ? p.jsonFile.id : p.pdfFile.id, 
-        projectNo: p.projectNo,
-        projectName: p.projectName,
-        hasJson: p.hasJson,
-        index: i + 1 
+        id: p.hasExcel ? p.excelFile.id : (p.hasJson ? p.jsonFile.id : p.pdfFile.id), 
+        projectNo: p.projectNo, projectName: p.projectName,
+        hasJson: p.hasJson, hasExcel: p.hasExcel, index: i + 1 
       })),
       selectedReportIndex: selectedReportIndex ?? null,
       selectedFileName: selectedProject ? `${selectedProject.projectNo} - ${selectedProject.projectName}` : null,
@@ -449,27 +437,15 @@ export async function POST(request: NextRequest) {
 
   } catch (error: any) {
     console.error('Chat error:', error)
-    return NextResponse.json(
-      { error: 'Failed: ' + error.message },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: 'Failed: ' + error.message }, { status: 500 })
   }
 }
 
 export async function GET() {
-  const folderId = process.env.KNOWLEDGE_BASE_FOLDER_ID
   const connectionTest = await testConnection()
-
   return NextResponse.json({
-    status: 'Chatbot v4 - Financial Report Analyzer',
+    status: 'Chatbot v5 - Financial Report Analyzer (Excel Support)',
     connection: connectionTest,
-    knowledgeBase: {
-      folderId: folderId || 'not configured'
-    },
-    features: [
-      'Smart project name extraction',
-      'Auto-detects JSON files for accurate data',
-      'Shows project number + name instead of filename'
-    ]
+    features: ['Excel file support (📊)', 'JSON pre-processed data (✅)', 'PDF fallback (📄)']
   })
 }
